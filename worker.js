@@ -229,7 +229,6 @@ async function checkCastleJobs(env, options = {}) {
           job.district = detail.district || job.district || "";
           job.province = detail.province || job.province || "";
           job.address = detail.address || "";
-          job.problemDetail = detail.problemDetail || job.problemDetail || "";
 
           newJobs.push(job);
           await sleep(200);
@@ -264,7 +263,6 @@ async function checkCastleJobs(env, options = {}) {
           mergedJob.district = detail.district || mergedJob.district || "";
           mergedJob.province = detail.province || mergedJob.province || "";
           mergedJob.address = detail.address || "";
-          mergedJob.problemDetail = detail.problemDetail || mergedJob.problemDetail || "";
 
           slaAlerts.push({
             job: mergedJob,
@@ -471,9 +469,7 @@ function formatSlaAlertMessage(job, alert) {
     `จังหวัด: ${job.province || "-"}`,
     `อำเภอ: ${job.district || "-"}`,
     `SLA: ${job.slaDate || "-"}`,
-    `Service: ${job.serviceCode || "-"}`,
-    job.problemDetail ? `ปัญหา: ${job.problemDetail}` : "",
-    ""
+    `Service: ${job.serviceCode || "-"}`
   ].filter(Boolean).join("\n");
 }
 
@@ -500,7 +496,6 @@ async function fetchJobDetail(job, jar) {
     const text = cleanText(stripTags(html));
 
     const location = extractLocationFromText(text);
-    const problemDetail = extractProblemDetailFromText(text);
 
     return {
       ok: true,
@@ -509,7 +504,6 @@ async function fetchJobDetail(job, jar) {
       district: location.district || "",
       province: location.province || "",
       address: location.address || "",
-      problemDetail: problemDetail || "",
       sampleText: text.slice(0, 1200)
     };
   } catch (err) {
@@ -520,41 +514,6 @@ async function fetchJobDetail(job, jar) {
       province: job.province || ""
     };
   }
-}
-
-function extractProblemDetailFromText(text) {
-  const raw = cleanText(text || "");
-
-  const patterns = [
-    /(?:รายละเอียดปัญหา|รายละเอียดอาการ|ปัญหา|อาการเสีย|อาการที่พบ|อาการแจ้ง|สาเหตุ)\s*[:：]?\s*(.{3,500}?)(?:Site Address|Service SLA|SLA|Service Solution|Solution|Remark|หมายเหตุ|Job No|Request Date|Plan Date|Bank|Job Type|Office Code|$)/i,
-    /(?:Problem Detail|Problem|Issue|Symptom|Description|Call Detail|Job Detail|Service Detail|Customer Problem)\s*[:：]?\s*(.{3,500}?)(?:Site Address|Service SLA|SLA|Service Solution|Solution|Remark|Job No|Request Date|Plan Date|Bank|Job Type|Office Code|$)/i,
-    /(?:Remark|หมายเหตุ)\s*[:：]?\s*(.{3,500}?)(?:Site Address|Service SLA|SLA|Service Solution|Solution|Job No|Request Date|Plan Date|Bank|Job Type|Office Code|$)/i
-  ];
-
-  for (const pattern of patterns) {
-    const m = raw.match(pattern);
-    if (m && m[1]) {
-      const cleaned = cleanupProblemText(m[1]);
-      if (cleaned) return cleaned;
-    }
-  }
-
-  return "";
-}
-
-function cleanupProblemText(value) {
-  let s = cleanText(value || "");
-
-  s = s
-    .replace(/\s+(Site Address|Service SLA|SLA|Service Solution|Solution|Job No|Request Date|Plan Date|Bank|Job Type|Office Code).*$/i, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (s.length > 250) {
-    s = s.slice(0, 250).trim() + "...";
-  }
-
-  return s;
 }
 
 async function loginCastle(env) {
@@ -968,6 +927,29 @@ function extractProvinceFromText(text) {
   return "";
 }
 
+
+function cleanProblemText(text) {
+  let s = cleanText(text || "");
+
+  // ถ้ามีคำว่า "ปัญหา:" ให้เอาเฉพาะข้อความหลังคำนี้
+  const problemMatch = s.match(/ปัญหา\s*[:：]\s*(.*)/i);
+  if (problemMatch && problemMatch[1]) {
+    s = problemMatch[1];
+  }
+
+  // ตัดข้อความตั้งแต่หัวข้ออื่น ๆ เป็นต้นไป
+  s = s
+    .replace(/วิธีการแก้ไข\s*[:：]?.*$/i, "")
+    .replace(/เวลาเปิดทำการ\s*[:：]?.*$/i, "")
+    .replace(/หมายเหตุ\s*[:：]?.*$/i, "")
+    .replace(/Solution\s*[:：]?.*$/i, "")
+    .replace(/Remark\s*[:：]?.*$/i, "")
+    .replace(/Service SLA\s*[:：]?.*$/i, "")
+    .trim();
+
+  return s || "-";
+}
+
 function formatNewJobMessage(job) {
   return [
     "🔔 มีงานใหม่ใน Service Castle",
@@ -978,9 +960,7 @@ function formatNewJobMessage(job) {
     `อำเภอ: ${job.district || "-"}`,
     `Job Open: ${job.openDate || "-"}`,
     `SLA: ${job.slaDate || "-"}`,
-    `Service: ${job.serviceCode || "-"}`,
-    job.problemDetail ? `ปัญหา: ${job.problemDetail}` : "",
-    ""
+    `Service: ${job.serviceCode || "-"}`
   ].filter(Boolean).join("\n");
 }
 
