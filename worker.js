@@ -471,8 +471,7 @@ function formatSlaAlertMessage(job, alert) {
     `อำเภอ: ${job.district || "-"}`,
     `SLA: ${job.slaDate || "-"}`,
     `ปัญหา: ${job.problem || cleanProblemText(job.serviceCode)}`
-  ].filter(Boolean).join("
-");
+  ].filter(Boolean).join("\n");
 }
 
 async function fetchJobDetail(job, jar) {
