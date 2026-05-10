@@ -481,6 +481,40 @@ function formatSlaAlertMessage(job, alert) {
 }
 
 
+
+function extractContactFromHtmlOrText(html, text) {
+  const fromTable = extractContactFromTableCells(html);
+  const fromText = extractContactFromText(text);
+
+  return {
+    contactName: fromTable.contactName || fromText.contactName || "",
+    contactPhone: fromTable.contactPhone || fromText.contactPhone || ""
+  };
+}
+
+function extractContactFromTableCells(html) {
+  const cells = [...String(html || "").matchAll(/<t[dh][^>]*>[\s\S]*?<\/t[dh]>/gi)]
+    .map(m => cleanText(stripTags(m[0])))
+    .filter(Boolean);
+
+  let contactName = "";
+  let contactPhone = "";
+
+  for (let i = 0; i < cells.length; i++) {
+    const label = cells[i];
+
+    if (!contactName && /ชื่อผู้ติดต่อ|ผู้ติดต่อ|Contact Name/i.test(label)) {
+      contactName = cleanupContactValue(cells[i + 1] || "");
+    }
+
+    if (!contactPhone && /เบอร์ผู้ติดต่อ|เบอร์ติดต่อ|โทร|Tel|Phone|Mobile/i.test(label)) {
+      contactPhone = cleanupPhoneValue(cells[i + 1] || "");
+    }
+  }
+
+  return { contactName, contactPhone };
+}
+
 function extractContactFromText(text) {
   const raw = cleanText(text || "");
 
@@ -488,10 +522,9 @@ function extractContactFromText(text) {
   let contactPhone = "";
 
   const namePatterns = [
-    /ชื่อผู้ติดต่อ\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-]{2,80})/i,
-    /ผู้ติดต่อ\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-]{2,80})/i,
-    /Contact Name\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-]{2,80})/i,
-    /Contact\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-]{2,80})/i
+    /ชื่อผู้ติดต่อ\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-]{2,80}?)(?=\s*(?:เบอร์ผู้ติดต่อ|เบอร์ติดต่อ|โทร|รายละเอียด|ปัญหา|Service SLA|SLA|$))/i,
+    /ผู้ติดต่อ\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-]{2,80}?)(?=\s*(?:เบอร์ผู้ติดต่อ|เบอร์ติดต่อ|โทร|รายละเอียด|ปัญหา|Service SLA|SLA|$))/i,
+    /Contact Name\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-]{2,80}?)(?=\s*(?:Tel|Phone|Mobile|Problem|Issue|Service SLA|SLA|$))/i
   ];
 
   for (const pattern of namePatterns) {
@@ -503,12 +536,12 @@ function extractContactFromText(text) {
   }
 
   const phonePatterns = [
-    /เบอร์ผู้ติดต่อ\s*[:：]?\s*([0-9+\-\s]{8,30})/i,
-    /เบอร์ติดต่อ\s*[:：]?\s*([0-9+\-\s]{8,30})/i,
-    /โทร\s*[:：]?\s*([0-9+\-\s]{8,30})/i,
-    /Tel\s*[:：]?\s*([0-9+\-\s]{8,30})/i,
-    /Phone\s*[:：]?\s*([0-9+\-\s]{8,30})/i,
-    /Mobile\s*[:：]?\s*([0-9+\-\s]{8,30})/i
+    /เบอร์ผู้ติดต่อ\s*[:：]?\s*([0-9+\-\s/]{8,50})/i,
+    /เบอร์ติดต่อ\s*[:：]?\s*([0-9+\-\s/]{8,50})/i,
+    /โทร\s*[:：]?\s*([0-9+\-\s/]{8,50})/i,
+    /Tel\s*[:：]?\s*([0-9+\-\s/]{8,50})/i,
+    /Phone\s*[:：]?\s*([0-9+\-\s/]{8,50})/i,
+    /Mobile\s*[:：]?\s*([0-9+\-\s/]{8,50})/i
   ];
 
   for (const pattern of phonePatterns) {
@@ -581,7 +614,7 @@ async function fetchJobDetail(job, jar) {
     const text = cleanText(stripTags(html));
 
     const location = extractLocationFromText(text);
-    const contact = extractContactFromText(text);
+    const contact = extractContactFromHtmlOrText(html, text);
     const problem = extractProblemFromText(text);
 
     return {
