@@ -229,6 +229,7 @@ async function checkCastleJobs(env, options = {}) {
           job.district = detail.district || job.district || "";
           job.province = detail.province || job.province || "";
           job.address = detail.address || "";
+          job.problem = detail.problem || job.problem || "";
 
           newJobs.push(job);
           await sleep(200);
@@ -263,6 +264,7 @@ async function checkCastleJobs(env, options = {}) {
           mergedJob.district = detail.district || mergedJob.district || "";
           mergedJob.province = detail.province || mergedJob.province || "";
           mergedJob.address = detail.address || "";
+          mergedJob.problem = detail.problem || mergedJob.problem || "";
 
           slaAlerts.push({
             job: mergedJob,
@@ -397,7 +399,6 @@ function getDueSlaAlert(job, alertMinutes, now = new Date()) {
   if (!matchedThreshold) return null;
 
   const key = `before_${matchedThreshold}`;
-
   if (notified[key]) return null;
 
   return {
@@ -469,8 +470,9 @@ function formatSlaAlertMessage(job, alert) {
     `จังหวัด: ${job.province || "-"}`,
     `อำเภอ: ${job.district || "-"}`,
     `SLA: ${job.slaDate || "-"}`,
-    `Service: ${job.serviceCode || "-"}`
-  ].filter(Boolean).join("\n");
+    `ปัญหา: ${job.problem || cleanProblemText(job.serviceCode)}`
+  ].filter(Boolean).join("
+");
 }
 
 async function fetchJobDetail(job, jar) {
@@ -480,7 +482,8 @@ async function fetchJobDetail(job, jar) {
         ok: false,
         reason: "no detail link",
         district: job.district || "",
-        province: job.province || ""
+        province: job.province || "",
+        problem: job.problem || ""
       };
     }
 
@@ -496,6 +499,7 @@ async function fetchJobDetail(job, jar) {
     const text = cleanText(stripTags(html));
 
     const location = extractLocationFromText(text);
+    const problem = extractProblemFromText(text);
 
     return {
       ok: true,
@@ -504,6 +508,7 @@ async function fetchJobDetail(job, jar) {
       district: location.district || "",
       province: location.province || "",
       address: location.address || "",
+      problem: problem || "",
       sampleText: text.slice(0, 1200)
     };
   } catch (err) {
@@ -511,7 +516,8 @@ async function fetchJobDetail(job, jar) {
       ok: false,
       reason: err.message || String(err),
       district: job.district || "",
-      province: job.province || ""
+      province: job.province || "",
+      problem: job.problem || ""
     };
   }
 }
@@ -707,6 +713,7 @@ function parseJobs(html) {
       slaDate,
       status,
       serviceCode,
+      problem: "",
       link
     });
   }
@@ -928,6 +935,24 @@ function extractProvinceFromText(text) {
 }
 
 
+
+function extractProblemFromText(text) {
+  const raw = cleanText(text || "");
+
+  const patterns = [
+    /ปัญหา\s*[:：]\s*(.{2,500}?)(?:วิธีการแก้ไข|เวลาเปิดทำการ|หมายเหตุ|Service SLA|SLA|Solution|Remark|$)/i,
+    /Problem\s*[:：]\s*(.{2,500}?)(?:Solution|Remark|Service SLA|SLA|$)/i,
+    /Issue\s*[:：]\s*(.{2,500}?)(?:Solution|Remark|Service SLA|SLA|$)/i
+  ];
+
+  for (const pattern of patterns) {
+    const m = raw.match(pattern);
+    if (m && m[1]) return cleanProblemText(m[1]);
+  }
+
+  return "";
+}
+
 function cleanProblemText(text) {
   let s = cleanText(text || "");
 
@@ -960,7 +985,7 @@ function formatNewJobMessage(job) {
     `อำเภอ: ${job.district || "-"}`,
     `Job Open: ${job.openDate || "-"}`,
     `SLA: ${job.slaDate || "-"}`,
-    `Service: ${job.serviceCode || "-"}`
+    `ปัญหา: ${job.problem || cleanProblemText(job.serviceCode)}`
   ].filter(Boolean).join("\n");
 }
 
