@@ -1,0 +1,12 @@
+name = "serviceeast"
+main = "worker.js"
+compatibility_date = "2026-05-10"
+
+workers_dev = true
+
+kv_namespaces = [
+  { binding = "CASTLE_KV", id = "40a59fd4804940d9acef76d64ee5405f" }
+]
+
+[triggers]
+crons = ["*/5 * * * *"]
