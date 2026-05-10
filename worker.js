@@ -230,6 +230,8 @@ async function checkCastleJobs(env, options = {}) {
           job.province = detail.province || job.province || "";
           job.address = detail.address || "";
           job.problem = detail.problem || job.problem || "";
+          job.contactName = detail.contactName || job.contactName || "";
+          job.contactPhone = detail.contactPhone || job.contactPhone || "";
 
           newJobs.push(job);
           await sleep(200);
@@ -265,6 +267,8 @@ async function checkCastleJobs(env, options = {}) {
           mergedJob.province = detail.province || mergedJob.province || "";
           mergedJob.address = detail.address || "";
           mergedJob.problem = detail.problem || mergedJob.problem || "";
+          mergedJob.contactName = detail.contactName || mergedJob.contactName || "";
+          mergedJob.contactPhone = detail.contactPhone || mergedJob.contactPhone || "";
 
           slaAlerts.push({
             job: mergedJob,
@@ -469,10 +473,87 @@ function formatSlaAlertMessage(job, alert) {
     `Merchant: ${job.merchantName || "-"}`,
     `จังหวัด: ${job.province || "-"}`,
     `อำเภอ: ${job.district || "-"}`,
+    `ชื่อผู้ติดต่อ: ${job.contactName || "-"}`,
+    `เบอร์ผู้ติดต่อ: ${job.contactPhone || "-"}`,
     `SLA: ${job.slaDate || "-"}`,
     `ปัญหา: ${job.problem || cleanProblemText(job.serviceCode)}`
   ].filter(Boolean).join("\n");
 }
+
+
+function extractContactFromText(text) {
+  const raw = cleanText(text || "");
+
+  let contactName = "";
+  let contactPhone = "";
+
+  const namePatterns = [
+    /ชื่อผู้ติดต่อ\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-]{2,80})/i,
+    /ผู้ติดต่อ\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-]{2,80})/i,
+    /Contact Name\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-]{2,80})/i,
+    /Contact\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-]{2,80})/i
+  ];
+
+  for (const pattern of namePatterns) {
+    const m = raw.match(pattern);
+    if (m && m[1]) {
+      contactName = cleanupContactValue(m[1]);
+      break;
+    }
+  }
+
+  const phonePatterns = [
+    /เบอร์ผู้ติดต่อ\s*[:：]?\s*([0-9+\-\s]{8,30})/i,
+    /เบอร์ติดต่อ\s*[:：]?\s*([0-9+\-\s]{8,30})/i,
+    /โทร\s*[:：]?\s*([0-9+\-\s]{8,30})/i,
+    /Tel\s*[:：]?\s*([0-9+\-\s]{8,30})/i,
+    /Phone\s*[:：]?\s*([0-9+\-\s]{8,30})/i,
+    /Mobile\s*[:：]?\s*([0-9+\-\s]{8,30})/i
+  ];
+
+  for (const pattern of phonePatterns) {
+    const m = raw.match(pattern);
+    if (m && m[1]) {
+      contactPhone = cleanupPhoneValue(m[1]);
+      break;
+    }
+  }
+
+  return {
+    contactName,
+    contactPhone
+  };
+}
+
+function cleanupContactValue(value) {
+  let s = cleanText(value || "");
+
+  s = s
+    .replace(/เบอร์ผู้ติดต่อ.*$/i, "")
+    .replace(/เบอร์ติดต่อ.*$/i, "")
+    .replace(/โทร.*$/i, "")
+    .replace(/Tel.*$/i, "")
+    .replace(/Phone.*$/i, "")
+    .replace(/Mobile.*$/i, "")
+    .replace(/รายละเอียด.*$/i, "")
+    .replace(/ปัญหา.*$/i, "")
+    .trim();
+
+  if (s.length > 50) s = s.slice(0, 50).trim();
+
+  return s;
+}
+
+function cleanupPhoneValue(value) {
+  let s = cleanText(value || "");
+  const m = s.match(/[0-9+\-\s]{8,30}/);
+  if (!m) return "";
+
+  s = m[0].replace(/\s+/g, "").trim();
+
+  return s;
+}
+
 
 async function fetchJobDetail(job, jar) {
   try {
@@ -482,7 +563,9 @@ async function fetchJobDetail(job, jar) {
         reason: "no detail link",
         district: job.district || "",
         province: job.province || "",
-        problem: job.problem || ""
+        problem: job.problem || "",
+        contactName: job.contactName || "",
+        contactPhone: job.contactPhone || ""
       };
     }
 
@@ -498,6 +581,7 @@ async function fetchJobDetail(job, jar) {
     const text = cleanText(stripTags(html));
 
     const location = extractLocationFromText(text);
+    const contact = extractContactFromText(text);
     const problem = extractProblemFromText(text);
 
     return {
@@ -508,6 +592,8 @@ async function fetchJobDetail(job, jar) {
       province: location.province || "",
       address: location.address || "",
       problem: problem || "",
+      contactName: contact.contactName || "",
+      contactPhone: contact.contactPhone || "",
       sampleText: text.slice(0, 1200)
     };
   } catch (err) {
@@ -516,7 +602,9 @@ async function fetchJobDetail(job, jar) {
       reason: err.message || String(err),
       district: job.district || "",
       province: job.province || "",
-      problem: job.problem || ""
+      problem: job.problem || "",
+      contactName: job.contactName || "",
+      contactPhone: job.contactPhone || ""
     };
   }
 }
@@ -712,6 +800,8 @@ function parseJobs(html) {
       slaDate,
       status,
       serviceCode,
+      contactName: "",
+      contactPhone: "",
       problem: "",
       link
     });
@@ -821,22 +911,7 @@ function extractLocationFromText(text) {
   }
 
   const province = extractProvinceFromText(address) || extractProvinceFromText(raw);
-
-  let district = "";
-
-  const districtPatterns = [
-    /(?:อำเภอ|อ\.)\s*([ก-๙A-Za-z0-9 .\-]{2,60})/i,
-    /(?:เขต)\s*([ก-๙A-Za-z0-9 .\-]{2,60})/i,
-    /(?:District|Amphoe|Amphur|Khet)\s*[:：\-]?\s*([A-Za-z0-9 .\-]{2,60})/i
-  ];
-
-  for (const pattern of districtPatterns) {
-    const m = address.match(pattern);
-    if (m && m[1]) {
-      district = cleanupLocationValue(m[1], province);
-      break;
-    }
-  }
+  const district = extractDistrictFromAddress(address, province);
 
   return {
     district,
@@ -845,12 +920,54 @@ function extractLocationFromText(text) {
   };
 }
 
+function extractDistrictFromAddress(address, province = "") {
+  const text = cleanText(address || "");
+
+  // เน้นจับอำเภอจากรูปแบบจริงในเว็บ Castle เช่น "ต.นาเกลือ อ.บางละมุง จ.ชลบุรี"
+  // ต้องมี "อ." หรือ "อำเภอ" และตัดก่อน "จ." / "จังหวัด"
+  const strictPatterns = [
+    /(?:^|\s)(?:อำเภอ|อ\.)\s*([ก-๙A-Za-z0-9 .\-]{1,50}?)(?=\s*(?:จ\.|จังหวัด|Service SLA|SLA|$))/i,
+    /(?:^|\s)(?:เขต)\s*([ก-๙A-Za-z0-9 .\-]{1,50}?)(?=\s*(?:จ\.|จังหวัด|กรุงเทพ|Service SLA|SLA|$))/i,
+    /(?:^|\s)(?:District|Amphoe|Amphur|Khet)\s*[:：\-]?\s*([A-Za-z0-9 .\-]{1,50}?)(?=\s*(?:Province|Service SLA|SLA|$))/i
+  ];
+
+  for (const pattern of strictPatterns) {
+    const m = text.match(pattern);
+    if (m && m[1]) {
+      const cleaned = cleanupLocationValue(m[1], province);
+      if (isValidDistrict(cleaned)) return cleaned;
+    }
+  }
+
+  // ถ้ามีหลาย "อ." ให้เอาตัวท้ายสุด เพราะมักเป็นอำเภอจริงหลังตำบล
+  const allDistricts = [...text.matchAll(/(?:^|\s)(?:อำเภอ|อ\.)\s*([ก-๙A-Za-z0-9 .\-]{1,50})/gi)];
+  for (let i = allDistricts.length - 1; i >= 0; i--) {
+    const cleaned = cleanupLocationValue(allDistricts[i][1], province);
+    if (isValidDistrict(cleaned)) return cleaned;
+  }
+
+  return "";
+}
+
+function isValidDistrict(value) {
+  const s = cleanText(value || "");
+  if (!s) return false;
+  if (s.length > 30) return false;
+
+  // กันกรณีจับยาวผิดเป็นชื่อห้าง/ชั้น/ห้อง/ตำบลแทนอำเภอ
+  if (/(ต\.|ตำบล|แขวง|หมู่|ถนน|ถ\.|ซอย|ซ\.|ห้อง|ชั้น|ช\.|TERMINAL|เทอร์มินอล|BUILDING|FLOOR|ROOM)/i.test(s)) {
+    return false;
+  }
+
+  return true;
+}
+
 function cleanupLocationValue(value, province = "") {
   let s = cleanText(value || "");
 
   s = s
     .replace(/^(อำเภอ|อ\.|เขต|AMPHOE|AMPHUR|DISTRICT|KHET)\s*/i, "")
-    .replace(/(?:จังหวัด|จ\.)\s*[ก-๙A-Za-z .\-]+.*$/i, "")
+    .replace(/(?:จ\.|จังหวัด)\s*[ก-๙A-Za-z .\-]+.*$/i, "")
     .replace(/\s+(?:ต\.|ตำบล|แขวง)\s+.*$/i, "")
     .replace(/\s+(?:Service SLA|SLA|Service|Job No|Request Date|Plan Date).*$/i, "")
     .replace(/\s+\d{5}.*$/i, "")
@@ -862,8 +979,8 @@ function cleanupLocationValue(value, province = "") {
 
   s = s.replace(/[:：\-]+$/g, "").trim();
 
-  if (s.length > 35) {
-    s = s.slice(0, 35).trim();
+  if (s.length > 30) {
+    s = s.slice(0, 30).trim();
   }
 
   return s;
@@ -982,6 +1099,8 @@ function formatNewJobMessage(job) {
     `Merchant: ${job.merchantName || "-"}`,
     `จังหวัด: ${job.province || "-"}`,
     `อำเภอ: ${job.district || "-"}`,
+    `ชื่อผู้ติดต่อ: ${job.contactName || "-"}`,
+    `เบอร์ผู้ติดต่อ: ${job.contactPhone || "-"}`,
     `Job Open: ${job.openDate || "-"}`,
     `SLA: ${job.slaDate || "-"}`,
     `ปัญหา: ${job.problem || cleanProblemText(job.serviceCode)}`
