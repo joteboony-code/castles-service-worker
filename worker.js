@@ -474,8 +474,7 @@ function formatSlaAlertMessage(job, alert) {
     `Service: ${job.serviceCode || "-"}`,
     job.problemDetail ? `ปัญหา: ${job.problemDetail}` : "",
     ""
-  ].filter(Boolean).join("
-");
+  ].filter(Boolean).join("\n");
 }
 
 async function fetchJobDetail(job, jar) {
@@ -982,8 +981,7 @@ function formatNewJobMessage(job) {
     `Service: ${job.serviceCode || "-"}`,
     job.problemDetail ? `ปัญหา: ${job.problemDetail}` : "",
     ""
-  ].filter(Boolean).join("
-");
+  ].filter(Boolean).join("\n");
 }
 
 function makeOpenJobKeyboard(job) {
