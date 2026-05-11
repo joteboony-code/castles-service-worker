@@ -1035,8 +1035,8 @@ function extractDistrictFromAddress(address, province = "") {
   // เน้นจับอำเภอจากรูปแบบจริงในเว็บ Castle เช่น "ต.นาเกลือ อ.บางละมุง จ.ชลบุรี"
   // ต้องมี "อ." หรือ "อำเภอ" และตัดก่อน "จ." / "จังหวัด"
   const strictPatterns = [
-    /(?:^|\s)(?:อำเภอ|อ\.)\s*([ก-๙A-Za-z0-9 .\-]{1,50}?)(?=\s*(?:จ\.|จังหวัด|Service SLA|SLA|$))/i,
-    /(?:^|\s)(?:เขต)\s*([ก-๙A-Za-z0-9 .\-]{1,50}?)(?=\s*(?:จ\.|จังหวัด|กรุงเทพ|Service SLA|SLA|$))/i,
+    /(?:^|\s|[ก-๙A-Za-z0-9])(?:อำเภอ|อ\.)\s*([ก-๙A-Za-z0-9 .\-]{1,50}?)(?=\s*(?:จ\.|จังหวัด|Service SLA|SLA|$))/i,
+    /(?:^|\s|[ก-๙A-Za-z0-9])(?:เขต)\s*([ก-๙A-Za-z0-9 .\-]{1,50}?)(?=\s*(?:จ\.|จังหวัด|กรุงเทพ|Service SLA|SLA|$))/i,
     /(?:^|\s)(?:District|Amphoe|Amphur|Khet)\s*[:：\-]?\s*([A-Za-z0-9 .\-]{1,50}?)(?=\s*(?:Province|Service SLA|SLA|$))/i
   ];
 
@@ -1049,7 +1049,7 @@ function extractDistrictFromAddress(address, province = "") {
   }
 
   // ถ้ามีหลาย "อ." ให้เอาตัวท้ายสุด เพราะมักเป็นอำเภอจริงหลังตำบล
-  const allDistricts = [...text.matchAll(/(?:^|\s)(?:อำเภอ|อ\.)\s*([ก-๙A-Za-z0-9 .\-]{1,50})/gi)];
+  const allDistricts = [...text.matchAll(/(?:^|\s|[ก-๙A-Za-z0-9])(?:อำเภอ|อ\.)\s*([ก-๙A-Za-z0-9 .\-]{1,50})/gi)];
   for (let i = allDistricts.length - 1; i >= 0; i--) {
     const cleaned = cleanupLocationValue(allDistricts[i][1], province);
     if (isValidDistrict(cleaned)) return cleaned;
