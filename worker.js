@@ -471,8 +471,7 @@ function formatSlaAlertMessage(job, alert) {
     "",
     `Terminal ID: ${job.terminalId || "-"}`,
     `Merchant: ${job.merchantName || "-"}`,
-    `จังหวัด: ${job.province || "-"}`,
-    `อำเภอ: ${job.district || "-"}`,
+    formatAreaLine(job),
     `ชื่อผู้ติดต่อ: ${job.contactName || "-"}`,
     `เบอร์ผู้ติดต่อ: ${job.contactPhone || "-"}`,
     `SLA: ${job.slaDate || "-"}`,
@@ -1201,14 +1200,24 @@ function cleanProblemText(text) {
   return s || "-";
 }
 
+
+function formatAreaLine(job) {
+  const district = cleanText(job.district || "");
+  const province = cleanText(job.province || "");
+
+  if (district && province) return `พื้นที่: อ.${district} จ.${province}`;
+  if (district) return `พื้นที่: อ.${district}`;
+  if (province) return `พื้นที่: จ.${province}`;
+  return "พื้นที่: -";
+}
+
 function formatNewJobMessage(job) {
   return [
     "🔔 มีงานใหม่ใน Service Castle",
     "",
     `Terminal ID: ${job.terminalId || "-"}`,
     `Merchant: ${job.merchantName || "-"}`,
-    `จังหวัด: ${job.province || "-"}`,
-    `อำเภอ: ${job.district || "-"}`,
+    formatAreaLine(job),
     `ชื่อผู้ติดต่อ: ${job.contactName || "-"}`,
     `เบอร์ผู้ติดต่อ: ${job.contactPhone || "-"}`,
     `Job Open: ${job.openDate || "-"}`,
