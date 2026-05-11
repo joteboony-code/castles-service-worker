@@ -493,26 +493,101 @@ function extractContactFromHtmlOrText(html, text) {
 }
 
 function extractContactFromTableCells(html) {
-  const cells = [...String(html || "").matchAll(/<t[dh][^>]*>[\s\S]*?<\/t[dh]>/gi)]
-    .map(m => cleanText(stripTags(m[0])))
-    .filter(Boolean);
+  const rows = [...String(html || "").matchAll(/<tr[\s\S]*?<\/tr>/gi)];
+  const nameCandidates = [];
+  const phoneCandidates = [];
 
-  let contactName = "";
-  let contactPhone = "";
+  for (const rowMatch of rows) {
+    const rowHtml = rowMatch[0];
+    const cells = [...rowHtml.matchAll(/<t[dh][^>]*>[\s\S]*?<\/t[dh]>/gi)]
+      .map(m => cleanText(stripTags(m[0])))
+      .filter(Boolean);
 
-  for (let i = 0; i < cells.length; i++) {
-    const label = cells[i];
+    for (let i = 0; i < cells.length; i++) {
+      const label = cells[i].replace(/\s+/g, " ").replace(/[:：]\s*$/, "").trim();
+      const value = cells[i + 1] || "";
 
-    if (!contactName && /ชื่อผู้ติดต่อ|ผู้ติดต่อ|Contact Name/i.test(label)) {
-      contactName = cleanupContactValue(cells[i + 1] || "");
-    }
+      // จาก HTML จริง:
+      // <td>ชื่อผู้ติดต่อ :</td><td>...</td>
+      // <td>เบอร์ผู้ติดต่อ:</td><td>...</td>
+      if (label === "ชื่อผู้ติดต่อ" || /^Contact Name$/i.test(label)) {
+        nameCandidates.push({
+          value: cleanupContactValue(value),
+          score: 300
+        });
+      }
 
-    if (!contactPhone && /เบอร์ผู้ติดต่อ|เบอร์ติดต่อ|โทร|Tel|Phone|Mobile/i.test(label)) {
-      contactPhone = cleanupPhoneValue(cells[i + 1] || "");
+      if (label === "เบอร์ผู้ติดต่อ" || label === "เบอร์ติดต่อ" || /^Contact Phone$/i.test(label)) {
+        phoneCandidates.push({
+          value: cleanupPhoneValue(value),
+          score: 300
+        });
+      }
     }
   }
 
-  return { contactName, contactPhone };
+  const text = cleanText(stripTags(html));
+  const fromText = extractContactFromText(text);
+  if (fromText.contactName) nameCandidates.push({ value: fromText.contactName, score: 50 });
+  if (fromText.contactPhone) phoneCandidates.push({ value: fromText.contactPhone, score: 50 });
+
+  return {
+    contactName: chooseBestContactName(nameCandidates),
+    contactPhone: chooseBestPhone(phoneCandidates)
+  };
+}
+
+function chooseBestContactName(candidates) {
+  const cleaned = candidates
+    .map(c => ({
+      value: cleanupContactValue(typeof c === "string" ? c : c.value),
+      score: typeof c === "string" ? 0 : c.score || 0
+    }))
+    .filter(c => c.value)
+    .filter(c => isGoodContactName(c.value));
+
+  if (!cleaned.length) return "";
+
+  cleaned.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+
+    const slashA = (a.value.match(/\//g) || []).length;
+    const slashB = (b.value.match(/\//g) || []).length;
+    if (slashA !== slashB) return slashA - slashB;
+
+    return a.value.length - b.value.length;
+  });
+
+  return cleaned[0].value;
+}
+
+function chooseBestPhone(candidates) {
+  const cleaned = candidates
+    .map(c => ({
+      value: cleanupPhoneValue(typeof c === "string" ? c : c.value),
+      score: typeof c === "string" ? 0 : c.score || 0
+    }))
+    .filter(c => c.value);
+
+  if (!cleaned.length) return "";
+
+  cleaned.sort((a, b) => b.score - a.score);
+  return cleaned[0].value;
+}
+
+function isGoodContactName(value) {
+  const s = cleanText(value || "");
+  if (!s) return false;
+  if (s.length > 80) return false;
+
+  if (/(เบอร์|โทร|Tel|Phone|Mobile|รายละเอียด|ปัญหา|วิธีการแก้ไข|เวลาเปิดทำการ|SLA|Service|Job|Ticket|Category)/i.test(s)) {
+    return false;
+  }
+
+  const slashCount = (s.match(/\//g) || []).length;
+  if (slashCount >= 4) return false;
+
+  return true;
 }
 
 function extractContactFromText(text) {
@@ -522,9 +597,8 @@ function extractContactFromText(text) {
   let contactPhone = "";
 
   const namePatterns = [
-    /ชื่อผู้ติดต่อ\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-]{2,80}?)(?=\s*(?:เบอร์ผู้ติดต่อ|เบอร์ติดต่อ|โทร|รายละเอียด|ปัญหา|Service SLA|SLA|$))/i,
-    /ผู้ติดต่อ\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-]{2,80}?)(?=\s*(?:เบอร์ผู้ติดต่อ|เบอร์ติดต่อ|โทร|รายละเอียด|ปัญหา|Service SLA|SLA|$))/i,
-    /Contact Name\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-]{2,80}?)(?=\s*(?:Tel|Phone|Mobile|Problem|Issue|Service SLA|SLA|$))/i
+    /ชื่อผู้ติดต่อ\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-\/]{2,80}?)(?=\s*(?:เบอร์ผู้ติดต่อ|เบอร์ติดต่อ|โทร|รายละเอียดปัญหา|วิธีการแก้ไข|ปัญหา|Service SLA|SLA|$))/i,
+    /Contact Name\s*[:：]?\s*([ก-๙A-Za-z0-9 ._\-\/]{2,80}?)(?=\s*(?:Tel|Phone|Mobile|Problem|Issue|Service SLA|SLA|$))/i
   ];
 
   for (const pattern of namePatterns) {
@@ -538,7 +612,6 @@ function extractContactFromText(text) {
   const phonePatterns = [
     /เบอร์ผู้ติดต่อ\s*[:：]?\s*([0-9+\-\s/]{8,50})/i,
     /เบอร์ติดต่อ\s*[:：]?\s*([0-9+\-\s/]{8,50})/i,
-    /โทร\s*[:：]?\s*([0-9+\-\s/]{8,50})/i,
     /Tel\s*[:：]?\s*([0-9+\-\s/]{8,50})/i,
     /Phone\s*[:：]?\s*([0-9+\-\s/]{8,50})/i,
     /Mobile\s*[:：]?\s*([0-9+\-\s/]{8,50})/i
@@ -570,9 +643,13 @@ function cleanupContactValue(value) {
     .replace(/Mobile.*$/i, "")
     .replace(/รายละเอียด.*$/i, "")
     .replace(/ปัญหา.*$/i, "")
+    .replace(/วิธีการแก้ไข.*$/i, "")
+    .replace(/เวลาเปิดทำการ.*$/i, "")
     .trim();
 
-  if (s.length > 50) s = s.slice(0, 50).trim();
+  s = s.replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").trim();
+
+  if (s.length > 80) s = s.slice(0, 80).trim();
 
   return s;
 }
