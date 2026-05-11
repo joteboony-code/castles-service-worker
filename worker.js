@@ -1202,13 +1202,34 @@ function cleanProblemText(text) {
 
 
 function formatAreaLine(job) {
-  const district = cleanText(job.district || "");
+  const district = cleanText(job.district || inferDistrictFromKnownArea(job));
   const province = cleanText(job.province || "");
 
   if (district && province) return `พื้นที่: อ.${district} จ.${province}`;
   if (district) return `พื้นที่: อ.${district}`;
   if (province) return `พื้นที่: จ.${province}`;
   return "พื้นที่: -";
+}
+
+function inferDistrictFromKnownArea(job = {}) {
+  const province = cleanText(job.province || "");
+  const text = cleanText([
+    job.merchantName || "",
+    job.serviceCode || "",
+    job.address || "",
+    job.problem || ""
+  ].join(" ")).toUpperCase();
+
+  if (province === "ชลบุรี" || text.includes("CHONBURI") || text.includes("CHON BURI")) {
+    if (/BSRC|SRIRACHA|SRI RACHA|ศรีราชา/.test(text)) return "ศรีราชา";
+    if (/PATTAYA|พัทยา|บางละมุง/.test(text)) return "บางละมุง";
+    if (/LAEM CHABANG|แหลมฉบัง/.test(text)) return "ศรีราชา";
+    if (/AMATA|อมตะ|พานทอง/.test(text)) return "พานทอง";
+    if (/BAN BUENG|บ้านบึง/.test(text)) return "บ้านบึง";
+    if (/MUEANG CHONBURI|เมืองชลบุรี/.test(text)) return "เมืองชลบุรี";
+  }
+
+  return "";
 }
 
 function formatNewJobMessage(job) {
