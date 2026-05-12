@@ -325,12 +325,16 @@ async function checkCastleJobs(env, options = {}) {
     let notifyCount = 0;
 
     for (const job of newJobs) {
+      if (!shouldNotifyChonburiOnly(job)) continue;
+
       await safeSendTelegram(env, formatNewJobMessage(job), makeOpenJobKeyboard(job));
       notifyCount++;
       await sleep(450);
     }
 
     for (const item of slaAlerts) {
+      if (!shouldNotifyChonburiOnly(item.job)) continue;
+
       await safeSendTelegram(env, formatSlaAlertMessage(item.job, item.alert), makeOpenJobKeyboard(item.job));
       notifyCount++;
       await sleep(450);
@@ -342,7 +346,7 @@ async function checkCastleJobs(env, options = {}) {
         [
           "✅ เช็ก Service Castle แล้ว",
           "",
-          "ไม่พบงานใหม่ และไม่มี SLA ที่ถึงรอบแจ้งเตือน",
+          "ไม่พบงานใหม่/แจ้งเตือน SLA สำหรับจังหวัดชลบุรี",
           `งานในหน้าปัจจุบัน: ${jobs.length} รายการ`
         ].join("\n")
       );
@@ -469,6 +473,7 @@ function formatSlaAlertMessage(job, alert) {
   return [
     `⏰ SLA เหลือเวลา ${remainingText}`,
     "",
+    formatMentionLine(job),
     `Terminal ID: ${job.terminalId || "-"}`,
     `Merchant: ${job.merchantName || "-"}`,
     formatAreaLine(job),
@@ -1201,6 +1206,51 @@ function cleanProblemText(text) {
 }
 
 
+
+function shouldNotifyChonburiOnly(job) {
+  const province = cleanText(job.province || "").replace(/\s+/g, "");
+  return province === "ชลบุรี";
+}
+
+
+function getMentionForChonburiDistrict(job) {
+  const district = normalizeThaiAreaName(job.district || inferDistrictFromKnownArea(job));
+
+  const mentionJote = new Set([
+    "เมืองชลบุรี",
+    "เมือง",
+    "พนัสนิคม",
+    "พานทอง",
+    "บ้านบึง",
+    "เกาะจันทร์",
+    "บ่อทอง",
+    "หนองใหญ่"
+  ]);
+
+  const mentionVerz = new Set([
+    "บางละมุง",
+    "เกาะสีชัง"
+  ]);
+
+  if (mentionJote.has(district)) return "@joteboony";
+  if (mentionVerz.has(district)) return "@VERz1590";
+
+  return "";
+}
+
+function normalizeThaiAreaName(value) {
+  return cleanText(value || "")
+    .replace(/^อ\./, "")
+    .replace(/^อำเภอ/, "")
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+function formatMentionLine(job) {
+  const mention = getMentionForChonburiDistrict(job);
+  return mention ? `แจ้ง: ${mention}` : "";
+}
+
 function formatAreaLine(job) {
   const district = cleanText(job.district || inferDistrictFromKnownArea(job));
   const province = cleanText(job.province || "");
@@ -1236,6 +1286,7 @@ function formatNewJobMessage(job) {
   return [
     "🔔 มีงานใหม่ใน Service Castle",
     "",
+    formatMentionLine(job),
     `Terminal ID: ${job.terminalId || "-"}`,
     `Merchant: ${job.merchantName || "-"}`,
     formatAreaLine(job),
