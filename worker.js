@@ -480,6 +480,7 @@ function formatSlaAlertMessage(job, alert) {
     `ชื่อผู้ติดต่อ: ${job.contactName || "-"}`,
     `เบอร์ผู้ติดต่อ: ${job.contactPhone || "-"}`,
     `SLA: ${job.slaDate || "-"}`,
+    `Service: ${job.serviceCode || "-"}`,
     `ปัญหา: ${job.problem || cleanProblemText(job.serviceCode)}`
   ].filter(Boolean).join("\n");
 }
@@ -1294,6 +1295,7 @@ function formatNewJobMessage(job) {
     `เบอร์ผู้ติดต่อ: ${job.contactPhone || "-"}`,
     `Job Open: ${job.openDate || "-"}`,
     `SLA: ${job.slaDate || "-"}`,
+    `Service: ${job.serviceCode || "-"}`,
     `ปัญหา: ${job.problem || cleanProblemText(job.serviceCode)}`
   ].filter(Boolean).join("\n");
 }
