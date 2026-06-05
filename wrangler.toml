@@ -1,5 +1,5 @@
 name = "serviceeast"
-main = "worker.js"
+main = "dashboard-worker.js"
 compatibility_date = "2026-05-10"
 
 workers_dev = true
@@ -9,4 +9,4 @@ kv_namespaces = [
 ]
 
 [triggers]
-crons = ["* * * * *"]
+crons = ["*/5 * * * *"]
