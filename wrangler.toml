@@ -1,5 +1,5 @@
 name = "serviceeast"
-main = "dashboard-worker.js"
+main = "dashboard-worker-sla-sort.js"
 compatibility_date = "2026-05-10"
 
 workers_dev = true
