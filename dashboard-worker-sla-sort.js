@@ -1,6 +1,7 @@
 import dashboardWorker from "./dashboard-worker.js";
 
 const STATE_KEY = "castle_seen_jobs_v6_new_sla_alert";
+const CURRENT_RUN_WINDOW_MS = 2 * 60 * 1000;
 
 export default {
   async fetch(request, env, ctx) {
@@ -37,16 +38,11 @@ export default {
       if (resp.ok && data && data.state) {
         const state = await readJsonKv(env, STATE_KEY, {});
         const jobs = Object.values(state.jobs || {});
+        const currentActiveJobs = getCurrentRunJobs(jobs, state)
+          .filter(job => !isQcStatus(job.status));
 
-        data.state.latestJobs = jobs
+        data.state.latestJobs = currentActiveJobs
           .sort((a, b) => {
-            const aClosed = isQcStatus(a.status);
-            const bClosed = isQcStatus(b.status);
-
-            if (aClosed !== bClosed) {
-              return aClosed ? 1 : -1;
-            }
-
             const diff = parseCastleSlaTime(b.slaDate) - parseCastleSlaTime(a.slaDate);
             if (diff !== 0) return diff;
             return String(b.jobNumber || "").localeCompare(String(a.jobNumber || ""));
@@ -162,8 +158,30 @@ async function readJsonKv(env, key, fallback) {
   }
 }
 
+function getCurrentRunJobs(jobs, state) {
+  if (state.currentRunId) {
+    return jobs.filter(job => job.currentRunId === state.currentRunId);
+  }
+
+  const stateUpdatedAt = parseIsoTime(state.updatedAt);
+  if (!stateUpdatedAt) {
+    return jobs;
+  }
+
+  const minSeenAt = stateUpdatedAt - CURRENT_RUN_WINDOW_MS;
+  return jobs.filter(job => {
+    const lastSeenAt = parseIsoTime(job.lastSeenAt);
+    return lastSeenAt && lastSeenAt >= minSeenAt;
+  });
+}
+
 function isQcStatus(value) {
   return String(value || "").trim().toUpperCase() === "QC";
+}
+
+function parseIsoTime(value) {
+  const time = Date.parse(String(value || ""));
+  return Number.isFinite(time) ? time : 0;
 }
 
 function parseCastleSlaTime(value) {
