@@ -115,6 +115,21 @@ function patchDashboardHtml(text) {
   );
 
   htmlText = htmlText.replace(
+    '  async function api(path, options) {',
+    `  var adminKeyInput = document.getElementById('adminKey');
+  if (adminKeyInput) {
+    adminKeyInput.addEventListener('keydown', function(event) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        saveKey();
+      }
+    });
+  }
+
+  async function api(path, options) {`
+  );
+
+  htmlText = htmlText.replace(
     '  loadStatus().catch(function(err) {',
     `  function logoutDashboard() {
     if (!confirm('ออกจากระบบ Dashboard?')) return;
