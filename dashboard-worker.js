@@ -3,6 +3,11 @@ import castleWorker from "./worker.js";
 const STATE_KEY = "castle_seen_jobs_v6_new_sla_alert";
 const CONTROL_KEY = "castle_system_control_v1";
 const LAST_RUN_KEY = "castle_dashboard_last_run_v1";
+const SCHEDULE_KEY = "castle_schedule_config_v1";
+const SCHEDULE_RUN_KEY = "castle_schedule_run_v1";
+const DEFAULT_CHECK_INTERVAL_MINUTES = 5;
+const MIN_CHECK_INTERVAL_MINUTES = 1;
+const MAX_CHECK_INTERVAL_MINUTES = 1440;
 
 export default {
   async fetch(request, env, ctx) {
@@ -32,6 +37,38 @@ export default {
         };
         await env.CASTLE_KV.put(CONTROL_KEY, JSON.stringify(control));
         return json({ ok: true, control, status: await getDashboardStatus(env) });
+      }
+
+      if (url.pathname === "/api/schedule") {
+        if (request.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+        const body = await readJsonBody(request);
+        const intervalMinutes = normalizeIntervalMinutes(body.intervalMinutes, null);
+
+        if (!intervalMinutes) {
+          return json({
+            ok: false,
+            error: `รอบตรวจต้องเป็นตัวเลข ${MIN_CHECK_INTERVAL_MINUTES}-${MAX_CHECK_INTERVAL_MINUTES} นาที`
+          }, 400);
+        }
+
+        const schedule = {
+          intervalMinutes,
+          updatedAt: new Date().toISOString(),
+          updatedBy: "dashboard"
+        };
+
+        await env.CASTLE_KV.put(SCHEDULE_KEY, JSON.stringify(schedule));
+
+        const runState = await readJsonKv(env, SCHEDULE_RUN_KEY, {});
+        await env.CASTLE_KV.put(SCHEDULE_RUN_KEY, JSON.stringify({
+          ...runState,
+          nextCheckAt: getNextCheckAt(runState.lastCheckedAt || "", intervalMinutes, new Date()).toISOString(),
+          intervalMinutes,
+          updatedAt: new Date().toISOString(),
+          updatedBy: "schedule_change"
+        }));
+
+        return json({ ok: true, schedule, status: await getDashboardStatus(env) });
       }
 
       if (url.pathname === "/api/check") {
@@ -91,7 +128,62 @@ export default {
       return;
     }
 
-    return castleWorker.scheduled(controller, env, ctx);
+    const now = new Date();
+    const schedule = await getSchedule(env);
+    const runState = await readJsonKv(env, SCHEDULE_RUN_KEY, {});
+    const due = getScheduleDue(runState.lastCheckedAt || "", schedule.intervalMinutes, now);
+
+    if (!due.due) {
+      return;
+    }
+
+    let waitUntilPromise = null;
+    const passthroughCtx = {
+      waitUntil(promise) {
+        waitUntilPromise = promise;
+        if (ctx && typeof ctx.waitUntil === "function") {
+          ctx.waitUntil(promise);
+        }
+      }
+    };
+
+    const startedAt = new Date().toISOString();
+    try {
+      await castleWorker.scheduled(controller, env, passthroughCtx);
+      if (waitUntilPromise) {
+        await waitUntilPromise;
+      }
+
+      const finishedAt = new Date();
+      const result = {
+        ok: true,
+        source: "scheduled_check",
+        intervalMinutes: schedule.intervalMinutes,
+        startedAt,
+        checkedAt: finishedAt.toISOString(),
+        lastCheckedAt: finishedAt.toISOString(),
+        nextCheckAt: getNextCheckAt(finishedAt.toISOString(), schedule.intervalMinutes, finishedAt).toISOString()
+      };
+
+      await env.CASTLE_KV.put(SCHEDULE_RUN_KEY, JSON.stringify(result));
+      await env.CASTLE_KV.put(LAST_RUN_KEY, JSON.stringify(result));
+    } catch (err) {
+      const finishedAt = new Date();
+      const result = {
+        ok: false,
+        source: "scheduled_check",
+        intervalMinutes: schedule.intervalMinutes,
+        startedAt,
+        checkedAt: finishedAt.toISOString(),
+        lastCheckedAt: finishedAt.toISOString(),
+        nextCheckAt: getNextCheckAt(finishedAt.toISOString(), schedule.intervalMinutes, finishedAt).toISOString(),
+        error: err.message || String(err)
+      };
+
+      await env.CASTLE_KV.put(SCHEDULE_RUN_KEY, JSON.stringify(result));
+      await env.CASTLE_KV.put(LAST_RUN_KEY, JSON.stringify(result));
+      throw err;
+    }
   }
 };
 
@@ -132,11 +224,84 @@ async function getControl(env) {
   }
 }
 
+async function getSchedule(env) {
+  const raw = await env.CASTLE_KV.get(SCHEDULE_KEY);
+  const defaultInterval = getDefaultIntervalMinutes(env);
+
+  if (!raw) {
+    return {
+      intervalMinutes: defaultInterval,
+      updatedAt: "",
+      updatedBy: "default"
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      intervalMinutes: normalizeIntervalMinutes(parsed.intervalMinutes, defaultInterval),
+      updatedAt: parsed.updatedAt || "",
+      updatedBy: parsed.updatedBy || "unknown"
+    };
+  } catch {
+    return {
+      intervalMinutes: defaultInterval,
+      updatedAt: "",
+      updatedBy: "fallback"
+    };
+  }
+}
+
+function getDefaultIntervalMinutes(env) {
+  return normalizeIntervalMinutes(env.CHECK_INTERVAL_MINUTES, DEFAULT_CHECK_INTERVAL_MINUTES);
+}
+
+function normalizeIntervalMinutes(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const rounded = Math.floor(n);
+  if (rounded < MIN_CHECK_INTERVAL_MINUTES || rounded > MAX_CHECK_INTERVAL_MINUTES) return fallback;
+  return rounded;
+}
+
+function getScheduleDue(lastCheckedAt, intervalMinutes, now = new Date()) {
+  if (!lastCheckedAt) {
+    return {
+      due: true,
+      nextCheckAt: now
+    };
+  }
+
+  const last = new Date(lastCheckedAt);
+  if (Number.isNaN(last.getTime())) {
+    return {
+      due: true,
+      nextCheckAt: now
+    };
+  }
+
+  const next = new Date(last.getTime() + intervalMinutes * 60 * 1000);
+  return {
+    due: now.getTime() >= next.getTime(),
+    nextCheckAt: next
+  };
+}
+
+function getNextCheckAt(lastCheckedAt, intervalMinutes, now = new Date()) {
+  if (!lastCheckedAt) return now;
+  const last = new Date(lastCheckedAt);
+  if (Number.isNaN(last.getTime())) return now;
+  return new Date(last.getTime() + intervalMinutes * 60 * 1000);
+}
+
 async function getDashboardStatus(env) {
   const control = await getControl(env);
+  const schedule = await getSchedule(env);
+  const scheduleRun = await readJsonKv(env, SCHEDULE_RUN_KEY, {});
   const state = await readJsonKv(env, STATE_KEY, {});
   const lastRun = await readJsonKv(env, LAST_RUN_KEY, null);
   const jobs = Object.values(state.jobs || {});
+  const dueInfo = getScheduleDue(scheduleRun.lastCheckedAt || "", schedule.intervalMinutes, new Date());
 
   const chonburiJobs = jobs.filter(job => cleanText(job.province || "") === "ชลบุรี");
   const latestJobs = [...jobs]
@@ -158,6 +323,15 @@ async function getDashboardStatus(env) {
     ok: true,
     now: new Date().toISOString(),
     control,
+    schedule: {
+      ...schedule,
+      minIntervalMinutes: MIN_CHECK_INTERVAL_MINUTES,
+      maxIntervalMinutes: MAX_CHECK_INTERVAL_MINUTES,
+      lastCheckedAt: scheduleRun.lastCheckedAt || scheduleRun.checkedAt || "",
+      nextCheckAt: dueInfo.nextCheckAt ? dueInfo.nextCheckAt.toISOString() : "",
+      dueNow: dueInfo.due,
+      lastScheduledResult: scheduleRun || null
+    },
     config: {
       hasAdminKey: Boolean(env.ADMIN_KEY),
       hasCastleUsername: Boolean(env.CASTLE_USERNAME),
@@ -266,7 +440,8 @@ function renderDashboardHtml() {
     button { border:0; border-radius:14px; padding:12px 16px; font-weight:800; cursor:pointer; color:white; font-size:15px; }
     button:disabled { opacity:.55; cursor:not-allowed; }
     .btn-on { background:var(--green); } .btn-off { background:var(--red); } .btn-main { background:var(--blue); } .btn-warn { background:var(--amber); } .btn-dark { background:#111827; }
-    input { width:100%; border:1px solid var(--line); border-radius:14px; padding:13px 14px; font-size:16px; }
+    input, select { width:100%; border:1px solid var(--line); border-radius:14px; padding:13px 14px; font-size:16px; background:#fff; }
+    .inline-form { display:grid; grid-template-columns: minmax(120px, 1fr) auto; gap:10px; align-items:center; margin-top:10px; }
     table { width:100%; border-collapse:collapse; font-size:14px; }
     th, td { padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
     th { color:var(--muted); font-weight:700; }
@@ -275,7 +450,7 @@ function renderDashboardHtml() {
     pre { white-space:pre-wrap; word-break:break-word; background:#0b1020; color:#e5e7eb; border-radius:14px; padding:14px; max-height:360px; overflow:auto; }
     .hide { display:none; }
     @media (max-width: 800px) { .hero { display:block; } .grid { grid-template-columns: 1fr 1fr; } .half { grid-column:1 / -1; } h1 { font-size:23px; } }
-    @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } .card { border-radius:14px; } table { font-size:12px; } th, td { padding:8px 6px; } }
+    @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } .card { border-radius:14px; } .inline-form { grid-template-columns: 1fr; } table { font-size:12px; } th, td { padding:8px 6px; } }
   </style>
 </head>
 <body>
@@ -283,7 +458,7 @@ function renderDashboardHtml() {
     <div class="hero">
       <div>
         <h1>Castle Service Dashboard</h1>
-        <div class="sub">ดูสถานะงาน เปิด/ปิดระบบ และสั่งตรวจงานจากหน้าเว็บ</div>
+        <div class="sub">ดูสถานะงาน เปิด/ปิดระบบ ตั้งรอบตรวจ และสั่งตรวจงานจากหน้าเว็บ</div>
       </div>
       <div id="systemBadge" class="badge"><span class="dot"></span><span>ยังไม่ได้โหลด</span></div>
     </div>
@@ -312,8 +487,8 @@ function renderDashboardHtml() {
           <div id="updatedAt" class="value" style="font-size:18px">-</div>
         </div>
         <div class="card">
-          <div class="label">SLA Alert</div>
-          <div id="slaAlert" class="value" style="font-size:18px">-</div>
+          <div class="label">รอบตรวจงาน</div>
+          <div id="intervalText" class="value" style="font-size:18px">-</div>
         </div>
 
         <div class="card half">
@@ -329,12 +504,42 @@ function renderDashboardHtml() {
         </div>
 
         <div class="card half">
+          <div class="label">ตั้งเวลาตรวจงาน</div>
+          <div class="inline-form">
+            <select id="intervalPreset" onchange="applyPresetInterval()">
+              <option value="1">ทุก 1 นาที</option>
+              <option value="3">ทุก 3 นาที</option>
+              <option value="5">ทุก 5 นาที</option>
+              <option value="10">ทุก 10 นาที</option>
+              <option value="15">ทุก 15 นาที</option>
+              <option value="30">ทุก 30 นาที</option>
+              <option value="60">ทุก 1 ชั่วโมง</option>
+              <option value="custom">กำหนดเอง</option>
+            </select>
+            <button class="btn-main" onclick="saveSchedule()">บันทึกรอบตรวจ</button>
+          </div>
+          <div style="margin-top:10px">
+            <input id="intervalMinutes" type="number" min="1" max="1440" step="1" placeholder="จำนวนนาที เช่น 5" />
+          </div>
+          <p class="muted">
+            ตรวจล่าสุด: <span id="lastScheduledAt">-</span><br>
+            รอบถัดไป: <span id="nextScheduledAt">-</span>
+          </p>
+        </div>
+
+        <div class="card half">
           <div class="label">การตั้งค่า Secret</div>
           <div id="secretList" class="muted">-</div>
           <div class="buttons">
             <button class="btn-dark" onclick="pingTelegram()">ทดสอบ Telegram</button>
             <button class="btn-dark" onclick="loginDebug()">Login Debug</button>
           </div>
+        </div>
+
+        <div class="card half">
+          <div class="label">SLA Alert</div>
+          <div id="slaAlert" class="value" style="font-size:18px">-</div>
+          <p class="muted">ใช้สำหรับแจ้งเตือนก่อนหมด SLA ตามนาทีที่ตั้งไว้ใน Secret</p>
         </div>
 
         <div class="card wide">
@@ -407,11 +612,29 @@ function renderDashboardHtml() {
     });
   }
 
+  function applyPresetInterval() {
+    var value = el('intervalPreset').value;
+    if (value !== 'custom') {
+      el('intervalMinutes').value = value;
+    }
+  }
+
+  function syncPreset(intervalMinutes) {
+    var preset = String(intervalMinutes || '');
+    var select = el('intervalPreset');
+    var found = false;
+    for (var i = 0; i < select.options.length; i++) {
+      if (select.options[i].value === preset) found = true;
+    }
+    select.value = found ? preset : 'custom';
+  }
+
   function renderStatus(data) {
     el('loginCard').classList.add('hide');
     el('dashboard').classList.remove('hide');
 
     var enabled = data.control && data.control.enabled;
+    var schedule = data.schedule || {};
     var badge = el('systemBadge');
     badge.className = 'badge ' + (enabled ? 'on' : 'off');
     badge.querySelector('span:last-child').textContent = enabled ? 'ระบบเปิดอยู่' : 'ระบบปิดอยู่';
@@ -420,7 +643,12 @@ function renderDashboardHtml() {
     el('chonburiJobs').textContent = data.state.chonburiJobs || 0;
     el('updatedAt').textContent = fmtTime(data.state.updatedAt);
     el('slaAlert').textContent = data.config.slaAlertMinutes;
-    el('controlText').textContent = enabled ? 'เปิดระบบ: ตรวจงานตาม cron ปกติ' : 'ปิดระบบ: ไม่เข้าไปตรวจงาน';
+    el('intervalText').textContent = 'ทุก ' + (schedule.intervalMinutes || '-') + ' นาที';
+    el('intervalMinutes').value = schedule.intervalMinutes || 5;
+    syncPreset(schedule.intervalMinutes || 5);
+    el('lastScheduledAt').textContent = fmtTime(schedule.lastCheckedAt);
+    el('nextScheduledAt').textContent = enabled ? fmtTime(schedule.nextCheckAt) : 'ระบบปิดอยู่';
+    el('controlText').textContent = enabled ? 'เปิดระบบ: ตรวจงานตามรอบที่ตั้งไว้' : 'ปิดระบบ: ไม่เข้าไปตรวจงาน';
     el('controlText').className = 'value ' + (enabled ? 'ok' : 'bad');
     el('enableBtn').disabled = enabled;
     el('disableBtn').disabled = !enabled;
@@ -464,6 +692,16 @@ function renderDashboardHtml() {
     var msg = enabled ? 'ยืนยันเปิดระบบตรวจงาน?' : 'ยืนยันปิดระบบ? เมื่อปิด cron จะไม่เข้าไปตรวจงานและไม่ส่งแจ้งเตือน';
     if (!confirm(msg)) return;
     var data = await api('/api/toggle', { method: 'POST', body: { enabled: enabled } });
+    renderStatus(data.status);
+  }
+
+  async function saveSchedule() {
+    var minutes = Number(el('intervalMinutes').value);
+    if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) {
+      return alert('กรุณาใส่รอบตรวจ 1-1440 นาที');
+    }
+    if (!confirm('ต้องการเปลี่ยนรอบตรวจเป็นทุก ' + Math.floor(minutes) + ' นาที?')) return;
+    var data = await api('/api/schedule', { method: 'POST', body: { intervalMinutes: Math.floor(minutes) } });
     renderStatus(data.status);
   }
 
