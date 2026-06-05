@@ -9,4 +9,5 @@ kv_namespaces = [
 ]
 
 [triggers]
-crons = ["*/5 * * * *"]
+# Cron ปลุกทุก 1 นาที แต่ dashboard-worker.js จะตรวจจริงตามรอบที่ตั้งไว้ในหน้าเว็บ
+crons = ["* * * * *"]
