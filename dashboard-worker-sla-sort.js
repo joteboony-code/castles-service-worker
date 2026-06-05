@@ -6,6 +6,20 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    if (url.pathname === "/" || url.pathname === "/dashboard") {
+      const resp = await dashboardWorker.fetch(request, env, ctx);
+      const text = await resp.text();
+
+      if (!resp.ok || !String(resp.headers.get("content-type") || "").includes("text/html")) {
+        return new Response(text, {
+          status: resp.status,
+          headers: resp.headers
+        });
+      }
+
+      return html(addLogoutToDashboardHtml(text), resp.status);
+    }
+
     if (url.pathname === "/api/status") {
       const resp = await dashboardWorker.fetch(request, env, ctx);
       const text = await resp.text();
@@ -55,6 +69,43 @@ export default {
   }
 };
 
+function addLogoutToDashboardHtml(text) {
+  let htmlText = String(text || "");
+
+  htmlText = htmlText.replace(
+    '<div id="systemBadge" class="badge"><span class="dot"></span><span>ยังไม่ได้โหลด</span></div>',
+    '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap"><button id="logoutBtn" class="btn-dark" style="display:none" onclick="logoutDashboard()">ออกระบบ</button><div id="systemBadge" class="badge"><span class="dot"></span><span>ยังไม่ได้โหลด</span></div></div>'
+  );
+
+  htmlText = htmlText.replace(
+    'function renderStatus(data) {',
+    'function renderStatus(data) {\n    var logoutBtn = document.getElementById(\'logoutBtn\');\n    if (logoutBtn) logoutBtn.style.display = \'inline-block\';'
+  );
+
+  htmlText = htmlText.replace(
+    '  loadStatus().catch(function(err) {',
+    `  function logoutDashboard() {
+    if (!confirm('ออกจากระบบ Dashboard?')) return;
+    sessionStorage.removeItem('castleAdminKey');
+    adminKey = '';
+    el('adminKey').value = '';
+    el('loginCard').classList.remove('hide');
+    el('dashboard').classList.add('hide');
+    var logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) logoutBtn.style.display = 'none';
+    var badge = el('systemBadge');
+    if (badge) {
+      badge.className = 'badge';
+      badge.querySelector('span:last-child').textContent = 'ยังไม่ได้โหลด';
+    }
+  }
+
+  loadStatus().catch(function(err) {`
+  );
+
+  return htmlText;
+}
+
 async function readJsonKv(env, key, fallback) {
   const raw = await env.CASTLE_KV.get(key);
   if (!raw) return fallback;
@@ -96,6 +147,16 @@ function json(data, status = 200) {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store"
+    }
+  });
+}
+
+function html(body, status = 200) {
+  return new Response(body, {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store"
     }
   });
