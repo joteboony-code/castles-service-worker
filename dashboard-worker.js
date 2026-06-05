@@ -1,0 +1,501 @@
+import castleWorker from "./worker.js";
+
+const STATE_KEY = "castle_seen_jobs_v6_new_sla_alert";
+const CONTROL_KEY = "castle_system_control_v1";
+const LAST_RUN_KEY = "castle_dashboard_last_run_v1";
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/" || url.pathname === "/dashboard") {
+      return html(renderDashboardHtml(), 200);
+    }
+
+    if (url.pathname.startsWith("/api/")) {
+      if (!checkAdminRequest(request, env)) {
+        return json({ ok: false, error: "Unauthorized" }, 401);
+      }
+
+      if (url.pathname === "/api/status") {
+        return json(await getDashboardStatus(env));
+      }
+
+      if (url.pathname === "/api/toggle") {
+        if (request.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+        const body = await readJsonBody(request);
+        const enabled = Boolean(body.enabled);
+        const control = {
+          enabled,
+          updatedAt: new Date().toISOString(),
+          updatedBy: "dashboard"
+        };
+        await env.CASTLE_KV.put(CONTROL_KEY, JSON.stringify(control));
+        return json({ ok: true, control, status: await getDashboardStatus(env) });
+      }
+
+      if (url.pathname === "/api/check") {
+        const control = await getControl(env);
+        if (!control.enabled) {
+          const result = {
+            ok: true,
+            skipped: true,
+            reason: "system_disabled",
+            message: "ระบบปิดอยู่ จึงไม่เข้าไปตรวจงานและไม่ส่งแจ้งเตือน",
+            checkedAt: new Date().toISOString()
+          };
+          await env.CASTLE_KV.put(LAST_RUN_KEY, JSON.stringify(result));
+          return json(result);
+        }
+
+        const result = await callOldWorkerJson(request, env, ctx, "/check");
+        await env.CASTLE_KV.put(LAST_RUN_KEY, JSON.stringify({
+          ...result,
+          checkedAt: new Date().toISOString(),
+          source: "dashboard_manual_check"
+        }));
+        return json(result);
+      }
+
+      if (url.pathname === "/api/reset") {
+        const result = await callOldWorkerJson(request, env, ctx, "/reset");
+        await env.CASTLE_KV.put(LAST_RUN_KEY, JSON.stringify({
+          ...result,
+          checkedAt: new Date().toISOString(),
+          source: "dashboard_reset"
+        }));
+        return json(result);
+      }
+
+      if (url.pathname === "/api/ping") {
+        return json(await callOldWorkerJson(request, env, ctx, "/ping"));
+      }
+
+      if (url.pathname === "/api/debug") {
+        return json(await callOldWorkerJson(request, env, ctx, "/debug"));
+      }
+
+      if (url.pathname === "/api/login-debug") {
+        return json(await callOldWorkerJson(request, env, ctx, "/login-debug"));
+      }
+
+      return json({ ok: false, error: "Not found" }, 404);
+    }
+
+    return castleWorker.fetch(request, env, ctx);
+  },
+
+  async scheduled(controller, env, ctx) {
+    const control = await getControl(env);
+    if (!control.enabled) {
+      return;
+    }
+
+    return castleWorker.scheduled(controller, env, ctx);
+  }
+};
+
+function checkAdminRequest(request, env) {
+  if (!env.ADMIN_KEY) return false;
+
+  const url = new URL(request.url);
+  const bearer = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  const headerKey = (request.headers.get("x-admin-key") || "").trim();
+  const queryKey = (url.searchParams.get("key") || "").trim();
+
+  return headerKey === env.ADMIN_KEY || bearer === env.ADMIN_KEY || queryKey === env.ADMIN_KEY;
+}
+
+async function getControl(env) {
+  const raw = await env.CASTLE_KV.get(CONTROL_KEY);
+  if (!raw) {
+    return {
+      enabled: true,
+      updatedAt: "",
+      updatedBy: "default"
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      enabled: parsed.enabled !== false,
+      updatedAt: parsed.updatedAt || "",
+      updatedBy: parsed.updatedBy || "unknown"
+    };
+  } catch {
+    return {
+      enabled: true,
+      updatedAt: "",
+      updatedBy: "fallback"
+    };
+  }
+}
+
+async function getDashboardStatus(env) {
+  const control = await getControl(env);
+  const state = await readJsonKv(env, STATE_KEY, {});
+  const lastRun = await readJsonKv(env, LAST_RUN_KEY, null);
+  const jobs = Object.values(state.jobs || {});
+
+  const chonburiJobs = jobs.filter(job => cleanText(job.province || "") === "ชลบุรี");
+  const latestJobs = [...jobs]
+    .sort((a, b) => String(b.lastSeenAt || "").localeCompare(String(a.lastSeenAt || "")))
+    .slice(0, 20)
+    .map(job => ({
+      jobNumber: job.jobNumber || "",
+      terminalId: job.terminalId || "",
+      merchantName: job.merchantName || "",
+      province: job.province || "",
+      district: job.district || "",
+      status: job.status || "",
+      slaDate: job.slaDate || "",
+      lastSeenAt: job.lastSeenAt || "",
+      link: job.link || ""
+    }));
+
+  return {
+    ok: true,
+    now: new Date().toISOString(),
+    control,
+    config: {
+      hasAdminKey: Boolean(env.ADMIN_KEY),
+      hasCastleUsername: Boolean(env.CASTLE_USERNAME),
+      hasCastlePassword: Boolean(env.CASTLE_PASSWORD),
+      hasTelegramToken: Boolean(env.TELEGRAM_BOT_TOKEN),
+      hasTelegramChatId: Boolean(env.TELEGRAM_CHAT_ID),
+      hasKv: Boolean(env.CASTLE_KV),
+      slaAlertMinutes: env.SLA_ALERT_MINUTES || "360,180,60,30,10"
+    },
+    state: {
+      updatedAt: state.updatedAt || "",
+      totalJobs: jobs.length,
+      chonburiJobs: chonburiJobs.length,
+      latestJobs
+    },
+    lastRun
+  };
+}
+
+async function callOldWorkerJson(request, env, ctx, path) {
+  const internalUrl = new URL(path, request.url);
+  internalUrl.searchParams.set("key", env.ADMIN_KEY || "");
+
+  const resp = await castleWorker.fetch(new Request(internalUrl.href, { method: "GET" }), env, ctx);
+  const text = await resp.text();
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      ok: resp.ok,
+      status: resp.status,
+      body: text
+    };
+  }
+}
+
+async function readJsonKv(env, key, fallback) {
+  const raw = await env.CASTLE_KV.get(key);
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+async function readJsonBody(request) {
+  try {
+    return await request.json();
+  } catch {
+    return {};
+  }
+}
+
+function cleanText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store"
+    }
+  });
+}
+
+function html(body, status = 200) {
+  return new Response(body, {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store"
+    }
+  });
+}
+
+function renderDashboardHtml() {
+  return `<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Castle Service Dashboard</title>
+  <style>
+    :root { color-scheme: light; --bg:#f5f7fb; --card:#ffffff; --text:#172033; --muted:#6b7280; --line:#e5e7eb; --green:#0f9f6e; --red:#dc2626; --blue:#2563eb; --amber:#d97706; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+    .wrap { max-width:1120px; margin:0 auto; padding:18px; }
+    .hero { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:16px; }
+    h1 { margin:0; font-size:28px; }
+    .sub { color:var(--muted); margin-top:6px; }
+    .grid { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:16px; box-shadow:0 10px 28px rgba(15,23,42,.05); }
+    .wide { grid-column: 1 / -1; }
+    .half { grid-column: span 2; }
+    .label { font-size:13px; color:var(--muted); margin-bottom:8px; }
+    .value { font-size:28px; font-weight:800; }
+    .badge { display:inline-flex; align-items:center; gap:8px; border-radius:999px; padding:8px 12px; font-weight:800; border:1px solid var(--line); background:#fff; }
+    .dot { width:10px; height:10px; border-radius:999px; background:var(--muted); }
+    .on .dot { background:var(--green); } .off .dot { background:var(--red); }
+    .on { color:var(--green); } .off { color:var(--red); }
+    .buttons { display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; }
+    button { border:0; border-radius:14px; padding:12px 16px; font-weight:800; cursor:pointer; color:white; font-size:15px; }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    .btn-on { background:var(--green); } .btn-off { background:var(--red); } .btn-main { background:var(--blue); } .btn-warn { background:var(--amber); } .btn-dark { background:#111827; }
+    input { width:100%; border:1px solid var(--line); border-radius:14px; padding:13px 14px; font-size:16px; }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th, td { padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { color:var(--muted); font-weight:700; }
+    .muted { color:var(--muted); }
+    .ok { color:var(--green); font-weight:800; } .bad { color:var(--red); font-weight:800; }
+    pre { white-space:pre-wrap; word-break:break-word; background:#0b1020; color:#e5e7eb; border-radius:14px; padding:14px; max-height:360px; overflow:auto; }
+    .hide { display:none; }
+    @media (max-width: 800px) { .hero { display:block; } .grid { grid-template-columns: 1fr 1fr; } .half { grid-column:1 / -1; } h1 { font-size:23px; } }
+    @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } .card { border-radius:14px; } table { font-size:12px; } th, td { padding:8px 6px; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div>
+        <h1>Castle Service Dashboard</h1>
+        <div class="sub">ดูสถานะงาน เปิด/ปิดระบบ และสั่งตรวจงานจากหน้าเว็บ</div>
+      </div>
+      <div id="systemBadge" class="badge"><span class="dot"></span><span>ยังไม่ได้โหลด</span></div>
+    </div>
+
+    <div id="loginCard" class="card wide">
+      <div class="label">Admin Key</div>
+      <input id="adminKey" type="password" placeholder="ใส่ ADMIN_KEY เพื่อเข้า Dashboard" autocomplete="current-password" />
+      <div class="buttons">
+        <button class="btn-main" onclick="saveKey()">เข้าสู่ระบบ</button>
+      </div>
+      <p class="muted">ระบบจะเก็บ key ไว้เฉพาะใน browser เครื่องนี้ด้วย sessionStorage ไม่ได้บันทึกลง Worker</p>
+    </div>
+
+    <div id="dashboard" class="hide">
+      <div class="grid">
+        <div class="card">
+          <div class="label">งานทั้งหมดที่จำไว้</div>
+          <div id="totalJobs" class="value">-</div>
+        </div>
+        <div class="card">
+          <div class="label">งานจังหวัดชลบุรี</div>
+          <div id="chonburiJobs" class="value">-</div>
+        </div>
+        <div class="card">
+          <div class="label">อัปเดตล่าสุด</div>
+          <div id="updatedAt" class="value" style="font-size:18px">-</div>
+        </div>
+        <div class="card">
+          <div class="label">SLA Alert</div>
+          <div id="slaAlert" class="value" style="font-size:18px">-</div>
+        </div>
+
+        <div class="card half">
+          <div class="label">ควบคุมระบบ</div>
+          <div id="controlText" class="value" style="font-size:22px">-</div>
+          <div class="buttons">
+            <button id="enableBtn" class="btn-on" onclick="toggleSystem(true)">เปิดระบบ</button>
+            <button id="disableBtn" class="btn-off" onclick="toggleSystem(false)">ปิดระบบ</button>
+            <button id="checkBtn" class="btn-main" onclick="checkNow()">ตรวจงานตอนนี้</button>
+            <button class="btn-warn" onclick="resetSeen()">Reset งานที่จำไว้</button>
+          </div>
+          <p class="muted">เมื่อปิดระบบ cron จะหยุดก่อน login เข้า Castle และจะไม่ส่ง Telegram</p>
+        </div>
+
+        <div class="card half">
+          <div class="label">การตั้งค่า Secret</div>
+          <div id="secretList" class="muted">-</div>
+          <div class="buttons">
+            <button class="btn-dark" onclick="pingTelegram()">ทดสอบ Telegram</button>
+            <button class="btn-dark" onclick="loginDebug()">Login Debug</button>
+          </div>
+        </div>
+
+        <div class="card wide">
+          <div class="label">รายการงานล่าสุด</div>
+          <div style="overflow:auto">
+            <table>
+              <thead><tr><th>Job</th><th>Terminal</th><th>Merchant</th><th>พื้นที่</th><th>Status</th><th>SLA</th></tr></thead>
+              <tbody id="jobsBody"><tr><td colspan="6" class="muted">ยังไม่มีข้อมูล</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card wide">
+          <div class="label">ผลลัพธ์ล่าสุด</div>
+          <pre id="lastResult">-</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  var adminKey = sessionStorage.getItem('castleAdminKey') || '';
+  var urlKey = new URL(location.href).searchParams.get('key');
+  if (urlKey) {
+    adminKey = urlKey;
+    sessionStorage.setItem('castleAdminKey', adminKey);
+    history.replaceState(null, '', location.pathname);
+  }
+
+  function el(id) { return document.getElementById(id); }
+
+  function saveKey() {
+    adminKey = el('adminKey').value.trim();
+    if (!adminKey) return alert('กรุณาใส่ ADMIN_KEY');
+    sessionStorage.setItem('castleAdminKey', adminKey);
+    loadStatus();
+  }
+
+  async function api(path, options) {
+    options = options || {};
+    var headers = options.headers || {};
+    headers['x-admin-key'] = adminKey;
+    if (options.body && typeof options.body !== 'string') {
+      headers['content-type'] = 'application/json';
+      options.body = JSON.stringify(options.body);
+    }
+    options.headers = headers;
+    var resp = await fetch(path, options);
+    var text = await resp.text();
+    var data;
+    try { data = JSON.parse(text); } catch (e) { data = { ok: resp.ok, body: text }; }
+    if (resp.status === 401) {
+      sessionStorage.removeItem('castleAdminKey');
+      el('loginCard').classList.remove('hide');
+      el('dashboard').classList.add('hide');
+      throw new Error('Unauthorized');
+    }
+    if (!resp.ok) throw new Error(data.error || text || 'Request failed');
+    return data;
+  }
+
+  function fmtTime(value) {
+    if (!value) return '-';
+    try { return new Date(value).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' }); } catch (e) { return value; }
+  }
+
+  function escapeHtml(value) {
+    return String(value || '').replace(/[&<>"']/g, function(ch) {
+      return ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#039;' })[ch];
+    });
+  }
+
+  function renderStatus(data) {
+    el('loginCard').classList.add('hide');
+    el('dashboard').classList.remove('hide');
+
+    var enabled = data.control && data.control.enabled;
+    var badge = el('systemBadge');
+    badge.className = 'badge ' + (enabled ? 'on' : 'off');
+    badge.querySelector('span:last-child').textContent = enabled ? 'ระบบเปิดอยู่' : 'ระบบปิดอยู่';
+
+    el('totalJobs').textContent = data.state.totalJobs || 0;
+    el('chonburiJobs').textContent = data.state.chonburiJobs || 0;
+    el('updatedAt').textContent = fmtTime(data.state.updatedAt);
+    el('slaAlert').textContent = data.config.slaAlertMinutes;
+    el('controlText').textContent = enabled ? 'เปิดระบบ: ตรวจงานตาม cron ปกติ' : 'ปิดระบบ: ไม่เข้าไปตรวจงาน';
+    el('controlText').className = 'value ' + (enabled ? 'ok' : 'bad');
+    el('enableBtn').disabled = enabled;
+    el('disableBtn').disabled = !enabled;
+    el('checkBtn').disabled = !enabled;
+
+    var c = data.config || {};
+    var items = [
+      ['ADMIN_KEY', c.hasAdminKey],
+      ['CASTLE_USERNAME', c.hasCastleUsername],
+      ['CASTLE_PASSWORD', c.hasCastlePassword],
+      ['TELEGRAM_BOT_TOKEN', c.hasTelegramToken],
+      ['TELEGRAM_CHAT_ID', c.hasTelegramChatId],
+      ['CASTLE_KV', c.hasKv]
+    ];
+    el('secretList').innerHTML = items.map(function(item) {
+      return '<div><b>' + item[0] + '</b>: ' + (item[1] ? '<span class="ok">พร้อม</span>' : '<span class="bad">ยังไม่ตั้ง</span>') + '</div>';
+    }).join('');
+
+    var rows = (data.state.latestJobs || []).map(function(job) {
+      var area = [job.district ? 'อ.' + job.district : '', job.province ? 'จ.' + job.province : ''].filter(Boolean).join(' ');
+      var jobText = job.link ? '<a href="' + escapeHtml(job.link) + '" target="_blank" rel="noreferrer">' + escapeHtml(job.jobNumber) + '</a>' : escapeHtml(job.jobNumber);
+      return '<tr><td>' + jobText + '</td><td>' + escapeHtml(job.terminalId) + '</td><td>' + escapeHtml(job.merchantName) + '</td><td>' + escapeHtml(area || '-') + '</td><td>' + escapeHtml(job.status || '-') + '</td><td>' + escapeHtml(job.slaDate || '-') + '</td></tr>';
+    }).join('');
+    el('jobsBody').innerHTML = rows || '<tr><td colspan="6" class="muted">ยังไม่มีข้อมูล</td></tr>';
+    el('lastResult').textContent = JSON.stringify(data.lastRun || data, null, 2);
+  }
+
+  async function loadStatus() {
+    if (!adminKey) {
+      el('adminKey').value = '';
+      el('loginCard').classList.remove('hide');
+      el('dashboard').classList.add('hide');
+      return;
+    }
+    el('adminKey').value = adminKey;
+    var data = await api('/api/status');
+    renderStatus(data);
+  }
+
+  async function toggleSystem(enabled) {
+    var msg = enabled ? 'ยืนยันเปิดระบบตรวจงาน?' : 'ยืนยันปิดระบบ? เมื่อปิด cron จะไม่เข้าไปตรวจงานและไม่ส่งแจ้งเตือน';
+    if (!confirm(msg)) return;
+    var data = await api('/api/toggle', { method: 'POST', body: { enabled: enabled } });
+    renderStatus(data.status);
+  }
+
+  async function checkNow() {
+    el('lastResult').textContent = 'กำลังตรวจงาน...';
+    var data = await api('/api/check', { method: 'POST' });
+    el('lastResult').textContent = JSON.stringify(data, null, 2);
+    await loadStatus();
+  }
+
+  async function resetSeen() {
+    if (!confirm('Reset งานที่จำไว้? ครั้งถัดไปจะถือว่าเป็นรอบเริ่มต้นใหม่')) return;
+    var data = await api('/api/reset', { method: 'POST' });
+    el('lastResult').textContent = JSON.stringify(data, null, 2);
+    await loadStatus();
+  }
+
+  async function pingTelegram() {
+    var data = await api('/api/ping', { method: 'POST' });
+    el('lastResult').textContent = JSON.stringify(data, null, 2);
+  }
+
+  async function loginDebug() {
+    el('lastResult').textContent = 'กำลังทดสอบ login...';
+    var data = await api('/api/login-debug', { method: 'POST' });
+    el('lastResult').textContent = JSON.stringify(data, null, 2);
+  }
+
+  loadStatus().catch(function(err) {
+    if (String(err.message) !== 'Unauthorized') alert(err.message || err);
+  });
+</script>
+</body>
+</html>`;
+}
