@@ -17,7 +17,7 @@ export default {
         });
       }
 
-      return html(addLogoutToDashboardHtml(text), resp.status);
+      return html(patchDashboardHtml(text), resp.status);
     }
 
     if (url.pathname === "/api/status") {
@@ -40,6 +40,13 @@ export default {
 
         data.state.latestJobs = jobs
           .sort((a, b) => {
+            const aClosed = isQcStatus(a.status);
+            const bClosed = isQcStatus(b.status);
+
+            if (aClosed !== bClosed) {
+              return aClosed ? 1 : -1;
+            }
+
             const diff = parseCastleSlaTime(b.slaDate) - parseCastleSlaTime(a.slaDate);
             if (diff !== 0) return diff;
             return String(b.jobNumber || "").localeCompare(String(a.jobNumber || ""));
@@ -69,12 +76,37 @@ export default {
   }
 };
 
-function addLogoutToDashboardHtml(text) {
+function patchDashboardHtml(text) {
   let htmlText = String(text || "");
 
   htmlText = htmlText.replace(
     '<div id="systemBadge" class="badge"><span class="dot"></span><span>ยังไม่ได้โหลด</span></div>',
     '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap"><button id="logoutBtn" class="btn-dark" style="display:none" onclick="logoutDashboard()">ออกระบบ</button><div id="systemBadge" class="badge"><span class="dot"></span><span>ยังไม่ได้โหลด</span></div></div>'
+  );
+
+  htmlText = htmlText.replace(
+    'ระบบจะเก็บ key ไว้เฉพาะใน browser เครื่องนี้ด้วย sessionStorage ไม่ได้บันทึกลง Worker',
+    'ระบบจะใช้ key เฉพาะตอนเปิดหน้านี้เท่านั้น ไม่บันทึกลง browser และไม่บันทึกลง Worker'
+  );
+
+  htmlText = htmlText.replace(
+    "var adminKey = sessionStorage.getItem('castleAdminKey') || '';",
+    "var adminKey = '';"
+  );
+
+  htmlText = htmlText.replace(
+    "    sessionStorage.setItem('castleAdminKey', adminKey);\n    history.replaceState(null, '', location.pathname);",
+    "    history.replaceState(null, '', location.pathname);"
+  );
+
+  htmlText = htmlText.replace(
+    "    sessionStorage.setItem('castleAdminKey', adminKey);\n    loadStatus();",
+    "    loadStatus();"
+  );
+
+  htmlText = htmlText.replace(
+    "      sessionStorage.removeItem('castleAdminKey');\n      el('loginCard').classList.remove('hide');",
+    "      adminKey = '';\n      el('loginCard').classList.remove('hide');"
   );
 
   htmlText = htmlText.replace(
@@ -86,7 +118,6 @@ function addLogoutToDashboardHtml(text) {
     '  loadStatus().catch(function(err) {',
     `  function logoutDashboard() {
     if (!confirm('ออกจากระบบ Dashboard?')) return;
-    sessionStorage.removeItem('castleAdminKey');
     adminKey = '';
     el('adminKey').value = '';
     el('loginCard').classList.remove('hide');
@@ -114,6 +145,10 @@ async function readJsonKv(env, key, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function isQcStatus(value) {
+  return String(value || "").trim().toUpperCase() === "QC";
 }
 
 function parseCastleSlaTime(value) {
