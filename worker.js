@@ -325,7 +325,7 @@ async function checkCastleJobs(env, options = {}) {
     let notifyCount = 0;
 
     for (const job of newJobs) {
-      if (!shouldNotifyChonburiOnly(job)) continue;
+      if (!shouldNotifySupportedProvince(job)) continue;
 
       await safeSendTelegram(env, formatNewJobMessage(job), makeOpenJobKeyboard(job));
       notifyCount++;
@@ -333,7 +333,7 @@ async function checkCastleJobs(env, options = {}) {
     }
 
     for (const item of slaAlerts) {
-      if (!shouldNotifyChonburiOnly(item.job)) continue;
+      if (!shouldNotifySupportedProvince(item.job)) continue;
 
       await safeSendTelegram(env, formatSlaAlertMessage(item.job, item.alert), makeOpenJobKeyboard(item.job));
       notifyCount++;
@@ -346,7 +346,7 @@ async function checkCastleJobs(env, options = {}) {
         [
           "✅ เช็ก Service Castle แล้ว",
           "",
-          "ไม่พบงานใหม่/แจ้งเตือน SLA สำหรับจังหวัดชลบุรี",
+          "ไม่พบงานใหม่/แจ้งเตือน SLA สำหรับจังหวัดชลบุรีและระยอง",
           `งานในหน้าปัจจุบัน: ${jobs.length} รายการ`
         ].join("\n")
       );
@@ -1208,13 +1208,16 @@ function cleanProblemText(text) {
 
 
 
-function shouldNotifyChonburiOnly(job) {
+function shouldNotifySupportedProvince(job) {
   const province = cleanText(job.province || "").replace(/\s+/g, "");
-  return province === "ชลบุรี";
+  return province === "ชลบุรี" || province === "ระยอง";
 }
 
 
 function getMentionForChonburiDistrict(job) {
+  const province = cleanText(job.province || "").replace(/\s+/g, "");
+  if (province !== "ชลบุรี") return "";
+
   const district = normalizeThaiAreaName(job.district || inferDistrictFromKnownArea(job));
 
   const mentionJote = new Set([
@@ -1233,8 +1236,14 @@ function getMentionForChonburiDistrict(job) {
     "เกาะสีชัง"
   ]);
 
+  const mentionOrt = new Set([
+    "ศรีราชา",
+    "สัตหีบ"
+  ]);
+
   if (mentionJote.has(district)) return "@joteboony";
   if (mentionVerz.has(district)) return "@VERz1590";
+  if (mentionOrt.has(district)) return "@ORTzxc";
 
   return "";
 }
