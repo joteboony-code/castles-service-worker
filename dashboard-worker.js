@@ -763,8 +763,8 @@ function renderDashboardHtml() {
   }
 
   function splitDistricts(value) {
-    return String(value || '').split(/[,;\n]/).map(function(x) {
-      return x.trim().replace(/\s+/g, '');
+    return String(value || '').split(/[,;\\n]/).map(function(x) {
+      return x.trim().replace(/\\s+/g, '');
     }).filter(Boolean);
   }
 
