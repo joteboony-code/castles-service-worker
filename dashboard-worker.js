@@ -5,6 +5,7 @@ const CONTROL_KEY = "castle_system_control_v1";
 const LAST_RUN_KEY = "castle_dashboard_last_run_v1";
 const SCHEDULE_KEY = "castle_schedule_config_v1";
 const SCHEDULE_RUN_KEY = "castle_schedule_run_v1";
+const NOTIFICATION_CONFIG_KEY = "castle_notification_config_v1";
 const DEFAULT_CHECK_INTERVAL_MINUTES = 5;
 const MIN_CHECK_INTERVAL_MINUTES = 1;
 const MAX_CHECK_INTERVAL_MINUTES = 1440;
@@ -69,6 +70,24 @@ export default {
         }));
 
         return json({ ok: true, schedule, status: await getDashboardStatus(env) });
+      }
+
+      if (url.pathname === "/api/notification-config") {
+        if (request.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+        const body = await readJsonBody(request);
+        const notificationConfig = normalizeNotificationConfig({
+          ...body,
+          updatedAt: new Date().toISOString(),
+          updatedBy: "dashboard"
+        });
+
+        await env.CASTLE_KV.put(NOTIFICATION_CONFIG_KEY, JSON.stringify(notificationConfig));
+
+        return json({
+          ok: true,
+          notificationConfig,
+          status: await getDashboardStatus(env)
+        });
       }
 
       if (url.pathname === "/api/check") {
@@ -264,6 +283,86 @@ function normalizeIntervalMinutes(value, fallback) {
   return rounded;
 }
 
+async function getNotificationConfig(env) {
+  return normalizeNotificationConfig(await readJsonKv(env, NOTIFICATION_CONFIG_KEY, getDefaultNotificationConfig()));
+}
+
+function getDefaultNotificationConfig() {
+  return {
+    provinceNotifications: [
+      { province: "ชลบุรี", enabled: true },
+      { province: "ระยอง", enabled: true }
+    ],
+    mentionRules: [
+      {
+        username: "@joteboony",
+        province: "ชลบุรี",
+        districts: ["เมืองชลบุรี", "เมือง", "พนัสนิคม", "พานทอง", "บ้านบึง", "เกาะจันทร์", "บ่อทอง", "หนองใหญ่"],
+        enabled: true,
+        tag: true
+      },
+      {
+        username: "@VERz1590",
+        province: "ชลบุรี",
+        districts: ["บางละมุง", "เกาะสีชัง"],
+        enabled: true,
+        tag: true
+      },
+      {
+        username: "@ORTzxc",
+        province: "ชลบุรี",
+        districts: ["ศรีราชา", "สัตหีบ"],
+        enabled: true,
+        tag: true
+      }
+    ],
+    updatedAt: "",
+    updatedBy: "default"
+  };
+}
+
+function normalizeNotificationConfig(config) {
+  const fallback = getDefaultNotificationConfig();
+  const provinceNotifications = Array.isArray(config && config.provinceNotifications)
+    ? config.provinceNotifications
+      .map(rule => ({
+        province: cleanText(rule && rule.province),
+        enabled: rule && rule.enabled !== false
+      }))
+      .filter(rule => rule.province)
+    : fallback.provinceNotifications;
+
+  const mentionRules = Array.isArray(config && config.mentionRules)
+    ? config.mentionRules
+      .map(rule => ({
+        username: normalizeTelegramUsername(rule && rule.username),
+        province: cleanText(rule && rule.province),
+        districts: normalizeDistrictList(rule && rule.districts),
+        enabled: rule && rule.enabled !== false,
+        tag: !(rule && rule.tag === false)
+      }))
+      .filter(rule => rule.username && rule.province)
+    : fallback.mentionRules;
+
+  return {
+    provinceNotifications,
+    mentionRules,
+    updatedAt: cleanText(config && config.updatedAt),
+    updatedBy: cleanText(config && config.updatedBy) || "unknown"
+  };
+}
+
+function normalizeTelegramUsername(value) {
+  const text = cleanText(value || "");
+  if (!text) return "";
+  return text.startsWith("@") ? text : `@${text}`;
+}
+
+function normalizeDistrictList(value) {
+  const items = Array.isArray(value) ? value : String(value || "").split(/[,;\n]/);
+  return [...new Set(items.map(item => cleanText(item).replace(/\s+/g, "")).filter(Boolean))];
+}
+
 function getScheduleDue(lastCheckedAt, intervalMinutes, now = new Date()) {
   if (!lastCheckedAt) {
     return {
@@ -297,6 +396,7 @@ function getNextCheckAt(lastCheckedAt, intervalMinutes, now = new Date()) {
 async function getDashboardStatus(env) {
   const control = await getControl(env);
   const schedule = await getSchedule(env);
+  const notificationConfig = await getNotificationConfig(env);
   const scheduleRun = await readJsonKv(env, SCHEDULE_RUN_KEY, {});
   const state = await readJsonKv(env, STATE_KEY, {});
   const lastRun = await readJsonKv(env, LAST_RUN_KEY, null);
@@ -341,6 +441,7 @@ async function getDashboardStatus(env) {
       hasKv: Boolean(env.CASTLE_KV),
       slaAlertMinutes: env.SLA_ALERT_MINUTES || "360,180,60,30,10"
     },
+    notificationConfig,
     state: {
       updatedAt: state.updatedAt || "",
       totalJobs: jobs.length,
@@ -442,6 +543,12 @@ function renderDashboardHtml() {
     .btn-on { background:var(--green); } .btn-off { background:var(--red); } .btn-main { background:var(--blue); } .btn-warn { background:var(--amber); } .btn-dark { background:#111827; }
     input, select { width:100%; border:1px solid var(--line); border-radius:14px; padding:13px 14px; font-size:16px; background:#fff; }
     .inline-form { display:grid; grid-template-columns: minmax(120px, 1fr) auto; gap:10px; align-items:center; margin-top:10px; }
+    .rule-form { display:grid; grid-template-columns: 1fr 1fr 2fr auto auto; gap:10px; align-items:center; margin-top:10px; }
+    .checkline { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:14px; }
+    .checkline input { width:auto; }
+    .province-list { display:flex; flex-wrap:wrap; gap:10px; margin:10px 0; }
+    .pill { display:inline-flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:999px; padding:8px 12px; background:#fff; }
+    .pill input { width:auto; }
     table { width:100%; border-collapse:collapse; font-size:14px; }
     th, td { padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
     th { color:var(--muted); font-weight:700; }
@@ -450,6 +557,7 @@ function renderDashboardHtml() {
     pre { white-space:pre-wrap; word-break:break-word; background:#0b1020; color:#e5e7eb; border-radius:14px; padding:14px; max-height:360px; overflow:auto; }
     .hide { display:none; }
     @media (max-width: 800px) { .hero { display:block; } .grid { grid-template-columns: 1fr 1fr; } .half { grid-column:1 / -1; } h1 { font-size:23px; } }
+    @media (max-width: 900px) { .rule-form { grid-template-columns: 1fr; } }
     @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } .card { border-radius:14px; } .inline-form { grid-template-columns: 1fr; } table { font-size:12px; } th, td { padding:8px 6px; } }
   </style>
 </head>
@@ -543,6 +651,32 @@ function renderDashboardHtml() {
         </div>
 
         <div class="card wide">
+          <div class="label">ตั้งค่าพื้นที่แจ้งเตือน / Tag User</div>
+          <p class="muted">
+            จังหวัดที่เปิดไว้จะส่งแจ้งเตือนเข้าแชท ส่วนตารางด้านล่างใช้กำหนดว่าอำเภอไหนต้อง tag user คนไหน
+          </p>
+          <div id="provinceRules" class="province-list"></div>
+          <div class="rule-form">
+            <input id="ruleUsername" placeholder="@username เช่น @ORTzxc" />
+            <input id="ruleProvince" placeholder="จังหวัด เช่น ชลบุรี" />
+            <input id="ruleDistricts" placeholder="อำเภอ เช่น ศรีราชา, สัตหีบ (ว่าง = ทั้งจังหวัด)" />
+            <label class="checkline"><input id="ruleTag" type="checkbox" checked /> tag</label>
+            <button class="btn-main" onclick="addMentionRule()">เพิ่ม</button>
+          </div>
+          <div style="overflow:auto; margin-top:12px">
+            <table>
+              <thead><tr><th>User</th><th>จังหวัด</th><th>อำเภอ</th><th>Tag</th><th>สถานะ</th><th></th></tr></thead>
+              <tbody id="mentionRulesBody"><tr><td colspan="6" class="muted">ยังไม่มี rule</td></tr></tbody>
+            </table>
+          </div>
+          <div class="buttons">
+            <button class="btn-main" onclick="saveNotificationConfig()">บันทึกพื้นที่แจ้งเตือน</button>
+            <button class="btn-dark" onclick="resetNotificationForm()">คืนค่า default</button>
+          </div>
+          <p class="muted">ค่า default: ชลบุรีและระยองแจ้งเตือน, ระยองไม่ tag, @ORTzxc สำหรับศรีราชา/สัตหีบ</p>
+        </div>
+
+        <div class="card wide">
           <div class="label">รายการงานล่าสุด</div>
           <div style="overflow:auto">
             <table>
@@ -562,6 +696,18 @@ function renderDashboardHtml() {
 
 <script>
   var adminKey = sessionStorage.getItem('castleAdminKey') || '';
+  var notificationConfig = null;
+  var defaultNotificationConfig = {
+    provinceNotifications: [
+      { province: 'ชลบุรี', enabled: true },
+      { province: 'ระยอง', enabled: true }
+    ],
+    mentionRules: [
+      { username: '@joteboony', province: 'ชลบุรี', districts: ['เมืองชลบุรี', 'เมือง', 'พนัสนิคม', 'พานทอง', 'บ้านบึง', 'เกาะจันทร์', 'บ่อทอง', 'หนองใหญ่'], enabled: true, tag: true },
+      { username: '@VERz1590', province: 'ชลบุรี', districts: ['บางละมุง', 'เกาะสีชัง'], enabled: true, tag: true },
+      { username: '@ORTzxc', province: 'ชลบุรี', districts: ['ศรีราชา', 'สัตหีบ'], enabled: true, tag: true }
+    ]
+  };
   var urlKey = new URL(location.href).searchParams.get('key');
   if (urlKey) {
     adminKey = urlKey;
@@ -612,6 +758,109 @@ function renderDashboardHtml() {
     });
   }
 
+  function cloneConfig(config) {
+    return JSON.parse(JSON.stringify(config || defaultNotificationConfig));
+  }
+
+  function splitDistricts(value) {
+    return String(value || '').split(/[,;\n]/).map(function(x) {
+      return x.trim().replace(/\s+/g, '');
+    }).filter(Boolean);
+  }
+
+  function normalizeUsername(value) {
+    var text = String(value || '').trim();
+    if (!text) return '';
+    return text.charAt(0) === '@' ? text : '@' + text;
+  }
+
+  function renderNotificationConfig(config) {
+    notificationConfig = cloneConfig(config);
+    notificationConfig.provinceNotifications = notificationConfig.provinceNotifications || [];
+    notificationConfig.mentionRules = notificationConfig.mentionRules || [];
+
+    var provinces = ['ชลบุรี', 'ระยอง'];
+    notificationConfig.provinceNotifications.forEach(function(rule) {
+      if (rule.province && provinces.indexOf(rule.province) === -1) provinces.push(rule.province);
+    });
+
+    el('provinceRules').innerHTML = provinces.map(function(province) {
+      var rule = notificationConfig.provinceNotifications.find(function(item) { return item.province === province; });
+      var checked = !rule || rule.enabled !== false;
+      return '<label class="pill"><input type="checkbox" data-province="' + escapeHtml(province) + '" ' + (checked ? 'checked' : '') + '> แจ้งเตือน จ.' + escapeHtml(province) + '</label>';
+    }).join('');
+
+    var rows = notificationConfig.mentionRules.map(function(rule, index) {
+      var districts = (rule.districts || []).length ? rule.districts.join(', ') : 'ทั้งจังหวัด';
+      return '<tr>' +
+        '<td>' + escapeHtml(rule.username) + '</td>' +
+        '<td>' + escapeHtml(rule.province) + '</td>' +
+        '<td>' + escapeHtml(districts) + '</td>' +
+        '<td>' + (rule.tag === false ? 'ไม่ tag' : 'tag') + '</td>' +
+        '<td>' + (rule.enabled === false ? '<span class="bad">ปิด</span>' : '<span class="ok">เปิด</span>') + '</td>' +
+        '<td><button class="btn-warn" onclick="removeMentionRule(' + index + ')">ลบ</button></td>' +
+      '</tr>';
+    }).join('');
+    el('mentionRulesBody').innerHTML = rows || '<tr><td colspan="6" class="muted">ยังไม่มี rule</td></tr>';
+  }
+
+  function collectProvinceNotifications() {
+    var boxes = document.querySelectorAll('#provinceRules input[data-province]');
+    var result = [];
+    boxes.forEach(function(box) {
+      result.push({ province: box.getAttribute('data-province'), enabled: box.checked });
+    });
+    return result;
+  }
+
+  function addMentionRule() {
+    var username = normalizeUsername(el('ruleUsername').value);
+    var province = el('ruleProvince').value.trim();
+    var districts = splitDistricts(el('ruleDistricts').value);
+    var tag = el('ruleTag').checked;
+    if (!username) return alert('กรุณาใส่ username เช่น @ORTzxc');
+    if (!province) return alert('กรุณาใส่จังหวัด');
+
+    notificationConfig = notificationConfig || cloneConfig(defaultNotificationConfig);
+    notificationConfig.mentionRules = notificationConfig.mentionRules || [];
+    notificationConfig.mentionRules.push({
+      username: username,
+      province: province,
+      districts: districts,
+      enabled: true,
+      tag: tag
+    });
+
+    el('ruleUsername').value = '';
+    el('ruleProvince').value = '';
+    el('ruleDistricts').value = '';
+    el('ruleTag').checked = true;
+    renderNotificationConfig(notificationConfig);
+  }
+
+  function removeMentionRule(index) {
+    if (!notificationConfig || !notificationConfig.mentionRules) return;
+    notificationConfig.mentionRules.splice(index, 1);
+    renderNotificationConfig(notificationConfig);
+  }
+
+  function resetNotificationForm() {
+    if (!confirm('คืนค่าพื้นที่แจ้งเตือนเป็น default? ยังไม่บันทึกจนกว่าจะกดบันทึก')) return;
+    renderNotificationConfig(defaultNotificationConfig);
+  }
+
+  async function saveNotificationConfig() {
+    notificationConfig = notificationConfig || cloneConfig(defaultNotificationConfig);
+    notificationConfig.provinceNotifications = collectProvinceNotifications();
+    var data = await api('/api/notification-config', {
+      method: 'POST',
+      body: notificationConfig
+    });
+    renderStatus(data.status);
+    el('lastResult').textContent = JSON.stringify(data.notificationConfig, null, 2);
+    alert('บันทึกพื้นที่แจ้งเตือนแล้ว');
+  }
+
   function applyPresetInterval() {
     var value = el('intervalPreset').value;
     if (value !== 'custom') {
@@ -653,6 +902,7 @@ function renderDashboardHtml() {
     el('enableBtn').disabled = enabled;
     el('disableBtn').disabled = !enabled;
     el('checkBtn').disabled = !enabled;
+    renderNotificationConfig(data.notificationConfig || defaultNotificationConfig);
 
     var c = data.config || {};
     var items = [

@@ -1,6 +1,7 @@
 const BASE_URL = "https://www.castles-th.com";
 const JOB_PAGE = "https://www.castles-th.com/showarea/3";
 const STATE_KEY = "castle_seen_jobs_v6_new_sla_alert";
+const NOTIFICATION_CONFIG_KEY = "castle_notification_config_v1";
 
 export default {
   async fetch(request, env, ctx) {
@@ -324,18 +325,20 @@ async function checkCastleJobs(env, options = {}) {
 
     let notifyCount = 0;
 
-    for (const job of newJobs) {
-      if (!shouldNotifySupportedProvince(job)) continue;
+    const notificationConfig = await getNotificationConfig(env);
 
-      await safeSendTelegram(env, formatNewJobMessage(job), makeOpenJobKeyboard(job));
+    for (const job of newJobs) {
+      if (!shouldNotifySupportedProvince(job, notificationConfig)) continue;
+
+      await safeSendTelegram(env, formatNewJobMessage(job, notificationConfig), makeOpenJobKeyboard(job));
       notifyCount++;
       await sleep(450);
     }
 
     for (const item of slaAlerts) {
-      if (!shouldNotifySupportedProvince(item.job)) continue;
+      if (!shouldNotifySupportedProvince(item.job, notificationConfig)) continue;
 
-      await safeSendTelegram(env, formatSlaAlertMessage(item.job, item.alert), makeOpenJobKeyboard(item.job));
+      await safeSendTelegram(env, formatSlaAlertMessage(item.job, item.alert, notificationConfig), makeOpenJobKeyboard(item.job));
       notifyCount++;
       await sleep(450);
     }
@@ -467,13 +470,13 @@ function formatAlertMinuteLabel(minutes) {
   return `${minutes} นาที`;
 }
 
-function formatSlaAlertMessage(job, alert) {
+function formatSlaAlertMessage(job, alert, notificationConfig = null) {
   const remainingText = formatRemainingTime(alert.diffMinutes);
 
   return [
     `⏰ SLA เหลือเวลา ${remainingText}`,
     "",
-    formatMentionLine(job),
+    formatMentionLine(job, notificationConfig),
     `Terminal ID: ${job.terminalId || "-"}`,
     `Merchant: ${job.merchantName || "-"}`,
     formatAreaLine(job),
@@ -1208,44 +1211,136 @@ function cleanProblemText(text) {
 
 
 
-function shouldNotifySupportedProvince(job) {
+function getDefaultNotificationConfig() {
+  return {
+    provinceNotifications: [
+      { province: "ชลบุรี", enabled: true },
+      { province: "ระยอง", enabled: true }
+    ],
+    mentionRules: [
+      {
+        username: "@joteboony",
+        province: "ชลบุรี",
+        districts: ["เมืองชลบุรี", "เมือง", "พนัสนิคม", "พานทอง", "บ้านบึง", "เกาะจันทร์", "บ่อทอง", "หนองใหญ่"],
+        enabled: true,
+        tag: true
+      },
+      {
+        username: "@VERz1590",
+        province: "ชลบุรี",
+        districts: ["บางละมุง", "เกาะสีชัง"],
+        enabled: true,
+        tag: true
+      },
+      {
+        username: "@ORTzxc",
+        province: "ชลบุรี",
+        districts: ["ศรีราชา", "สัตหีบ"],
+        enabled: true,
+        tag: true
+      }
+    ],
+    updatedAt: "",
+    updatedBy: "default"
+  };
+}
+
+async function getNotificationConfig(env) {
+  const raw = await env.CASTLE_KV.get(NOTIFICATION_CONFIG_KEY);
+  if (!raw) return getDefaultNotificationConfig();
+
+  try {
+    return normalizeNotificationConfig(JSON.parse(raw));
+  } catch {
+    return getDefaultNotificationConfig();
+  }
+}
+
+function normalizeNotificationConfig(config) {
+  const fallback = getDefaultNotificationConfig();
+  const provinceNotifications = Array.isArray(config && config.provinceNotifications)
+    ? config.provinceNotifications
+      .map(rule => ({
+        province: cleanText(rule && rule.province),
+        enabled: rule && rule.enabled !== false
+      }))
+      .filter(rule => rule.province)
+    : fallback.provinceNotifications;
+
+  const mentionRules = Array.isArray(config && config.mentionRules)
+    ? config.mentionRules
+      .map(rule => ({
+        username: normalizeTelegramUsername(rule && rule.username),
+        province: cleanText(rule && rule.province),
+        districts: Array.isArray(rule && rule.districts)
+          ? rule.districts.map(normalizeThaiAreaName).filter(Boolean)
+          : splitAreaList(rule && rule.districts),
+        enabled: rule && rule.enabled !== false,
+        tag: !(rule && rule.tag === false)
+      }))
+      .filter(rule => rule.username && rule.province)
+    : fallback.mentionRules;
+
+  return {
+    provinceNotifications,
+    mentionRules,
+    updatedAt: cleanText(config && config.updatedAt),
+    updatedBy: cleanText(config && config.updatedBy) || "unknown"
+  };
+}
+
+function splitAreaList(value) {
+  return String(value || "")
+    .split(/[,;\n]/)
+    .map(normalizeThaiAreaName)
+    .filter(Boolean);
+}
+
+function normalizeTelegramUsername(value) {
+  const text = cleanText(value || "");
+  if (!text) return "";
+  return text.startsWith("@") ? text : `@${text}`;
+}
+
+function shouldNotifySupportedProvince(job, notificationConfig = null) {
+  const config = notificationConfig || getDefaultNotificationConfig();
   const province = cleanText(job.province || "").replace(/\s+/g, "");
-  return province === "ชลบุรี" || province === "ระยอง";
+  if (!province) return false;
+
+  const provinceRule = (config.provinceNotifications || [])
+    .find(rule => normalizeThaiAreaName(rule.province) === province);
+  if (provinceRule && provinceRule.enabled !== false) return true;
+
+  return (config.mentionRules || []).some(rule => {
+    if (!rule || rule.enabled === false) return false;
+    if (normalizeThaiAreaName(rule.province) !== province) return false;
+    return ruleMatchesDistrict(rule, job);
+  });
 }
 
 
-function getMentionForChonburiDistrict(job) {
+function getMentionForChonburiDistrict(job, notificationConfig = null) {
+  const config = notificationConfig || getDefaultNotificationConfig();
   const province = cleanText(job.province || "").replace(/\s+/g, "");
-  if (province !== "ชลบุรี") return "";
+  const district = normalizeThaiAreaName(job.district || inferDistrictFromKnownArea(job));
+  const mentions = [];
+
+  for (const rule of config.mentionRules || []) {
+    if (!rule || rule.enabled === false || rule.tag === false) continue;
+    if (normalizeThaiAreaName(rule.province) !== province) continue;
+    if (!ruleMatchesDistrict(rule, { ...job, district })) continue;
+    if (!mentions.includes(rule.username)) mentions.push(rule.username);
+  }
+
+  return mentions.join(" ");
+}
+
+function ruleMatchesDistrict(rule, job) {
+  const districts = (rule.districts || []).map(normalizeThaiAreaName).filter(Boolean);
+  if (!districts.length) return true;
 
   const district = normalizeThaiAreaName(job.district || inferDistrictFromKnownArea(job));
-
-  const mentionJote = new Set([
-    "เมืองชลบุรี",
-    "เมือง",
-    "พนัสนิคม",
-    "พานทอง",
-    "บ้านบึง",
-    "เกาะจันทร์",
-    "บ่อทอง",
-    "หนองใหญ่"
-  ]);
-
-  const mentionVerz = new Set([
-    "บางละมุง",
-    "เกาะสีชัง"
-  ]);
-
-  const mentionOrt = new Set([
-    "ศรีราชา",
-    "สัตหีบ"
-  ]);
-
-  if (mentionJote.has(district)) return "@joteboony";
-  if (mentionVerz.has(district)) return "@VERz1590";
-  if (mentionOrt.has(district)) return "@ORTzxc";
-
-  return "";
+  return district && districts.includes(district);
 }
 
 function normalizeThaiAreaName(value) {
@@ -1256,8 +1351,8 @@ function normalizeThaiAreaName(value) {
     .trim();
 }
 
-function formatMentionLine(job) {
-  const mention = getMentionForChonburiDistrict(job);
+function formatMentionLine(job, notificationConfig = null) {
+  const mention = getMentionForChonburiDistrict(job, notificationConfig);
   return mention ? `แจ้ง: ${mention}` : "";
 }
 
@@ -1292,11 +1387,11 @@ function inferDistrictFromKnownArea(job = {}) {
   return "";
 }
 
-function formatNewJobMessage(job) {
+function formatNewJobMessage(job, notificationConfig = null) {
   return [
     "🔔 มีงานใหม่ใน Service Castle",
     "",
-    formatMentionLine(job),
+    formatMentionLine(job, notificationConfig),
     `Terminal ID: ${job.terminalId || "-"}`,
     `Merchant: ${job.merchantName || "-"}`,
     formatAreaLine(job),
