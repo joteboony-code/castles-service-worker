@@ -291,7 +291,12 @@ function getDefaultNotificationConfig() {
   return {
     provinceNotifications: [
       { province: "ชลบุรี", enabled: true },
-      { province: "ระยอง", enabled: true }
+      { province: "ระยอง", enabled: true },
+      { province: "ฉะเชิงเทรา", enabled: false },
+      { province: "ปราจีนบุรี", enabled: false },
+      { province: "สระแก้ว", enabled: false },
+      { province: "จันทบุรี", enabled: false },
+      { province: "ตราด", enabled: false }
     ],
     mentionRules: [
       {
@@ -700,7 +705,12 @@ function renderDashboardHtml() {
   var defaultNotificationConfig = {
     provinceNotifications: [
       { province: 'ชลบุรี', enabled: true },
-      { province: 'ระยอง', enabled: true }
+      { province: 'ระยอง', enabled: true },
+      { province: 'ฉะเชิงเทรา', enabled: false },
+      { province: 'ปราจีนบุรี', enabled: false },
+      { province: 'สระแก้ว', enabled: false },
+      { province: 'จันทบุรี', enabled: false },
+      { province: 'ตราด', enabled: false }
     ],
     mentionRules: [
       { username: '@joteboony', province: 'ชลบุรี', districts: ['เมืองชลบุรี', 'เมือง', 'พนัสนิคม', 'พานทอง', 'บ้านบึง', 'เกาะจันทร์', 'บ่อทอง', 'หนองใหญ่'], enabled: true, tag: true },
@@ -779,14 +789,15 @@ function renderDashboardHtml() {
     notificationConfig.provinceNotifications = notificationConfig.provinceNotifications || [];
     notificationConfig.mentionRules = notificationConfig.mentionRules || [];
 
-    var provinces = ['ชลบุรี', 'ระยอง'];
+    var provinces = ['ชลบุรี', 'ระยอง', 'ฉะเชิงเทรา', 'ปราจีนบุรี', 'สระแก้ว', 'จันทบุรี', 'ตราด'];
     notificationConfig.provinceNotifications.forEach(function(rule) {
       if (rule.province && provinces.indexOf(rule.province) === -1) provinces.push(rule.province);
     });
 
     el('provinceRules').innerHTML = provinces.map(function(province) {
       var rule = notificationConfig.provinceNotifications.find(function(item) { return item.province === province; });
-      var checked = !rule || rule.enabled !== false;
+      var defaultRule = defaultNotificationConfig.provinceNotifications.find(function(item) { return item.province === province; });
+      var checked = rule ? rule.enabled !== false : Boolean(defaultRule && defaultRule.enabled);
       return '<label class="pill"><input type="checkbox" data-province="' + escapeHtml(province) + '" ' + (checked ? 'checked' : '') + '> แจ้งเตือน จ.' + escapeHtml(province) + '</label>';
     }).join('');
 

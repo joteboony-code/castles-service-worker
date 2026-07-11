@@ -1215,7 +1215,12 @@ function getDefaultNotificationConfig() {
   return {
     provinceNotifications: [
       { province: "ชลบุรี", enabled: true },
-      { province: "ระยอง", enabled: true }
+      { province: "ระยอง", enabled: true },
+      { province: "ฉะเชิงเทรา", enabled: false },
+      { province: "ปราจีนบุรี", enabled: false },
+      { province: "สระแก้ว", enabled: false },
+      { province: "จันทบุรี", enabled: false },
+      { province: "ตราด", enabled: false }
     ],
     mentionRules: [
       {
