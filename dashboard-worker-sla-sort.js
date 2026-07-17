@@ -1,14 +1,7 @@
 import dashboardWorker from "./dashboard-worker.js";
-import { WorkerEntrypoint } from "cloudflare:workers";
 
 const STATE_KEY = "castle_seen_jobs_v6_new_sla_alert";
 const CURRENT_RUN_WINDOW_MS = 2 * 60 * 1000;
-
-export class ServiceLookup extends WorkerEntrypoint {
-  async getCurrentJobs() {
-    return buildServiceSnapshot(this.env);
-  }
-}
 
 export default {
   async fetch(request, env, ctx) {
@@ -43,12 +36,29 @@ export default {
       }
 
       if (resp.ok && data && data.state) {
-        const snapshot = await buildServiceSnapshot(env);
-        const allJobs = url.searchParams.get("all") === "true";
-        data.state.updatedAt = snapshot.checkedAt || data.state.updatedAt || "";
-        data.state.totalJobs = snapshot.totalJobs;
-        data.state.chonburiJobs = snapshot.chonburiJobs;
-        data.state.latestJobs = snapshot.jobs.slice(0, allJobs ? snapshot.jobs.length : 20);
+        const state = await readJsonKv(env, STATE_KEY, {});
+        const jobs = Object.values(state.jobs || {});
+        const currentActiveJobs = getCurrentRunJobs(jobs, state)
+          .filter(job => !isQcStatus(job.status));
+
+        data.state.latestJobs = currentActiveJobs
+          .sort((a, b) => {
+            const diff = parseCastleSlaTime(b.slaDate) - parseCastleSlaTime(a.slaDate);
+            if (diff !== 0) return diff;
+            return String(b.jobNumber || "").localeCompare(String(a.jobNumber || ""));
+          })
+          .slice(0, 20)
+          .map(job => ({
+            jobNumber: job.jobNumber || "",
+            terminalId: job.terminalId || "",
+            merchantName: job.merchantName || "",
+            province: job.province || "",
+            district: job.district || "",
+            status: job.status || "",
+            slaDate: job.slaDate || "",
+            lastSeenAt: job.lastSeenAt || "",
+            link: job.link || ""
+          }));
       }
 
       return json(data, resp.status);
@@ -61,35 +71,6 @@ export default {
     return dashboardWorker.scheduled(controller, env, ctx);
   }
 };
-
-async function buildServiceSnapshot(env) {
-  const state = await readJsonKv(env, STATE_KEY, {});
-  const jobs = getCurrentRunJobs(Object.values(state.jobs || {}), state)
-    .filter(job => !isQcStatus(job.status))
-    .sort((a, b) => {
-      const diff = parseCastleSlaTime(b.slaDate) - parseCastleSlaTime(a.slaDate);
-      if (diff !== 0) return diff;
-      return String(b.jobNumber || "").localeCompare(String(a.jobNumber || ""));
-    })
-    .map(job => ({
-      jobNumber: job.jobNumber || "",
-      terminalId: job.terminalId || "",
-      merchantName: job.merchantName || "",
-      province: job.province || "",
-      district: job.district || "",
-      status: job.status || "",
-      slaDate: job.slaDate || "",
-      lastSeenAt: job.lastSeenAt || "",
-      link: job.link || ""
-    }));
-
-  return {
-    checkedAt: state.updatedAt || "",
-    totalJobs: jobs.length,
-    chonburiJobs: jobs.filter(job => cleanText(job.province) === "ชลบุรี").length,
-    jobs
-  };
-}
 
 function patchDashboardHtml(text) {
   let htmlText = String(text || "");
@@ -196,10 +177,6 @@ function getCurrentRunJobs(jobs, state) {
 
 function isQcStatus(value) {
   return String(value || "").trim().toUpperCase() === "QC";
-}
-
-function cleanText(value) {
-  return String(value || "").replace(/\s+/g, " ").trim();
 }
 
 function parseIsoTime(value) {
