@@ -28,6 +28,28 @@ export default {
       return html(patchDashboardHtml(text), resp.status);
     }
 
+    // External cron / failsafe ที่เรียก /check จะเป็นโหมดเงียบโดย default
+    // เพื่อไม่ให้ส่ง Telegram ว่า "เช็กแล้ว ไม่พบงานใหม่" ทุก ๆ รอบ
+    // ถ้าต้องการใช้ /check แบบเดิม ให้เติม notify=1 เช่น /check?key=xxx&notify=1
+    if (url.pathname === "/check" && url.searchParams.get("notify") !== "1") {
+      if (!checkQueryAdmin(url, env)) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+
+      await dashboardWorker.scheduled(
+        { scheduledTime: Date.now(), cron: "external-failsafe" },
+        env,
+        makePassthroughContext(ctx)
+      );
+
+      return json({
+        ok: true,
+        mode: "silent_external_check",
+        message: "รับคำสั่งตรวจงานแบบเงียบแล้ว ถ้าไม่มีงานใหม่หรือ SLA จะไม่ส่ง Telegram",
+        checkedAt: new Date().toISOString()
+      });
+    }
+
     if (url.pathname === "/api/status") {
       const resp = await dashboardWorker.fetch(request, env, ctx);
       const text = await resp.text();
@@ -165,6 +187,20 @@ function patchDashboardHtml(text) {
   );
 
   return htmlText;
+}
+
+function checkQueryAdmin(url, env) {
+  return Boolean(env.ADMIN_KEY) && url.searchParams.get("key") === env.ADMIN_KEY;
+}
+
+function makePassthroughContext(ctx) {
+  return {
+    waitUntil(promise) {
+      if (ctx && typeof ctx.waitUntil === "function") {
+        ctx.waitUntil(promise);
+      }
+    }
+  };
 }
 
 async function readJsonKv(env, key, fallback) {
