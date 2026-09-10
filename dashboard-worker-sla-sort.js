@@ -14,6 +14,32 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    // External cron / failsafe มักเรียก /check?key=...
+    // เดิม /check ใน worker.js ถูกมองเป็น manual check ทำให้ส่ง Telegram สรุปซ้ำทุกครั้ง
+    // ค่าเริ่มต้นใหม่: /check จะเป็น silent scheduled check
+    // ถ้าต้องการให้ส่งสรุปแบบ manual จริง ๆ ให้ใช้ /check?key=...&notify=1
+    if (url.pathname === "/check" && !wantsManualNotify(url)) {
+      if (!checkAdminRequest(request, env)) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+
+      await dashboardWorker.scheduled(
+        {
+          scheduledTime: Date.now(),
+          cron: "external-failsafe-check"
+        },
+        env,
+        ctx
+      );
+
+      return json({
+        ok: true,
+        source: "external_check_silent",
+        message: "silent check complete; no summary Telegram is sent when there are no new jobs or SLA alerts",
+        snapshot: await buildServiceSnapshot(env)
+      });
+    }
+
     if (url.pathname === "/" || url.pathname === "/dashboard") {
       const resp = await dashboardWorker.fetch(request, env, ctx);
       const text = await resp.text();
@@ -26,28 +52,6 @@ export default {
       }
 
       return html(patchDashboardHtml(text), resp.status);
-    }
-
-    // External cron / failsafe ที่เรียก /check จะเป็นโหมดเงียบโดย default
-    // เพื่อไม่ให้ส่ง Telegram ว่า "เช็กแล้ว ไม่พบงานใหม่" ทุก ๆ รอบ
-    // ถ้าต้องการใช้ /check แบบเดิม ให้เติม notify=1 เช่น /check?key=xxx&notify=1
-    if (url.pathname === "/check" && url.searchParams.get("notify") !== "1") {
-      if (!checkQueryAdmin(url, env)) {
-        return new Response("Unauthorized", { status: 401 });
-      }
-
-      await dashboardWorker.scheduled(
-        { scheduledTime: Date.now(), cron: "external-failsafe" },
-        env,
-        makePassthroughContext(ctx)
-      );
-
-      return json({
-        ok: true,
-        mode: "silent_external_check",
-        message: "รับคำสั่งตรวจงานแบบเงียบแล้ว ถ้าไม่มีงานใหม่หรือ SLA จะไม่ส่ง Telegram",
-        checkedAt: new Date().toISOString()
-      });
     }
 
     if (url.pathname === "/api/status") {
@@ -111,6 +115,22 @@ async function buildServiceSnapshot(env) {
     chonburiJobs: jobs.filter(job => cleanText(job.province) === "ชลบุรี").length,
     jobs
   };
+}
+
+function wantsManualNotify(url) {
+  const value = String(url.searchParams.get("notify") || url.searchParams.get("manual") || "").trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "y";
+}
+
+function checkAdminRequest(request, env) {
+  if (!env.ADMIN_KEY) return false;
+
+  const url = new URL(request.url);
+  const bearer = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  const headerKey = (request.headers.get("x-admin-key") || "").trim();
+  const queryKey = (url.searchParams.get("key") || "").trim();
+
+  return headerKey === env.ADMIN_KEY || bearer === env.ADMIN_KEY || queryKey === env.ADMIN_KEY;
 }
 
 function patchDashboardHtml(text) {
@@ -187,20 +207,6 @@ function patchDashboardHtml(text) {
   );
 
   return htmlText;
-}
-
-function checkQueryAdmin(url, env) {
-  return Boolean(env.ADMIN_KEY) && url.searchParams.get("key") === env.ADMIN_KEY;
-}
-
-function makePassthroughContext(ctx) {
-  return {
-    waitUntil(promise) {
-      if (ctx && typeof ctx.waitUntil === "function") {
-        ctx.waitUntil(promise);
-      }
-    }
-  };
 }
 
 async function readJsonKv(env, key, fallback) {
