@@ -898,11 +898,35 @@ function parseJobs(html) {
 
     const jobIndex = cells.findIndex(c => c.includes(jobNumber));
 
-    const merchantName = jobIndex > 0 ? cells[jobIndex - 1] : "";
-    const openDate = jobIndex >= 0 && cells[jobIndex + 1] ? cells[jobIndex + 1] : "";
-    const slaDate = jobIndex >= 0 && cells[jobIndex + 2] ? cells[jobIndex + 2] : "";
-    const status = jobIndex >= 0 && cells[jobIndex + 3] ? cells[jobIndex + 3] : "";
-    const serviceCode = jobIndex >= 0 && cells[jobIndex + 4] ? cells[jobIndex + 4] : "";
+    // layout helpdesk ใหม: [เลขที่งาน, TID, ร้านค้า, ประเภทงาน, สถานะงาน, รับงาน, ครบกำหนด]
+    // คุนลักษณะ: cell ถัดจากเลขที่งานคือ TID (ตัวเลขล้วน)
+    // layout showarea เก่า: [ร้านค้า, เลขที่งาน, รับงาน, ครบกำหนด, สถานะงาน, ประเภทงาน]
+    const cellAt = (offset) => {
+      const v = cells[jobIndex + offset];
+      return v ? v : "";
+    };
+
+    let merchantName = "";
+    let openDate = "";
+    let slaDate = "";
+    let status = "";
+    let serviceCode = "";
+
+    if (jobIndex >= 0 && /^\d{6,12}$/.test(cellAt(1))) {
+      // layout ใหม่
+      merchantName = cellAt(2);
+      serviceCode = cellAt(3);
+      status = cellAt(4);
+      openDate = cellAt(5);
+      slaDate = cellAt(6);
+    } else if (jobIndex > 0) {
+      // layout เก่า (fallback)
+      merchantName = cells[jobIndex - 1];
+      openDate = cellAt(1);
+      slaDate = cellAt(2);
+      status = cellAt(3);
+      serviceCode = cellAt(4);
+    }
 
     const province = extractProvinceFromJob({ merchantName, serviceCode }, cells);
     const district = extractDistrictFromJob({ merchantName, serviceCode }, cells);
