@@ -754,7 +754,7 @@ async function loginCastle(env) {
       form.set(k, v);
     }
 
-    const usernameField = env.CASTLE_USER_FIELD || "user_name";
+    const usernameField = env.CASTLE_USER_FIELD || "login";
     const passwordField = env.CASTLE_PASS_FIELD || "password";
 
     form.set(usernameField, env.CASTLE_USERNAME);
@@ -1455,9 +1455,19 @@ function findTerminalId(cells) {
   return "";
 }
 
+function extractLoginFormHtml(html) {
+  const forms = String(html || "").match(/<form[\s\S]*?<\/form>/gi) || [];
+
+  // หน้า login ใหม่มีหลาย form (เช่น form เปลี่ยนภาษา action=/locale)
+  // ต้องเลืก form ทมี่ีช่อง password คอื form login จริง
+  const loginForm = forms.find(f => /<input[^>]+type=["']password["'][^>]*>/i.test(f));
+  return loginForm || forms[0] || "";
+}
+
 function extractHiddenInputs(html) {
   const result = {};
-  const inputs = String(html || "").match(/<input[^>]+>/gi) || [];
+  const source = extractLoginFormHtml(html) || String(html || "");
+  const inputs = source.match(/<input[^>]+>/gi) || [];
 
   for (const input of inputs) {
     const type = (getAttr(input, "type") || "").toLowerCase();
@@ -1474,7 +1484,8 @@ function extractHiddenInputs(html) {
 }
 
 function extractFormAction(html) {
-  const formMatch = String(html || "").match(/<form[^>]*action=["']([^"']+)["'][^>]*>/i);
+  const formHtml = extractLoginFormHtml(html);
+  const formMatch = String(formHtml).match(/<form[^>]*action=["']([^"']+)["'][^>]*>/i);
   return formMatch ? formMatch[1] : "";
 }
 
