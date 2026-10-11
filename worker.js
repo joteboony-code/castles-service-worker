@@ -1,5 +1,5 @@
 const BASE_URL = "https://www.castles-th.com";
-const JOB_PAGE = "https://www.castles-th.com/showarea/3";
+const JOB_PAGE = "https://www.castles-th.com/helpdesk?branch=3";
 const STATE_KEY = "castle_seen_jobs_v6_new_sla_alert";
 const NOTIFICATION_CONFIG_KEY = "castle_notification_config_v1";
 
